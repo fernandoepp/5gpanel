@@ -1,0 +1,19 @@
+[Unit]
+Description=Captura N2 (NGAP, SCTP 38412) i SBI (HTTP/2 7777, per al PEI) en buffer circular per a agent5g
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+# 10 fitxers de 20 MB com a màxim; els antics es reaprofiten
+ExecStartPre=/usr/bin/install -d -m 700 /var/lib/agent5g/ngap
+ExecStart=/usr/bin/dumpcap -q -i any -f "sctp port 38412 or tcp port 7777" -b filesize:20000 -b files:10 -w /var/lib/agent5g/ngap/ngap.pcapng
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agent5g
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

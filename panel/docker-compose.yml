@@ -1,0 +1,24 @@
+# Panell 5G (per defecte al PC1, core). Arrencar:  PANEL_IP=<IP LAN> docker compose up -d --build
+services:
+  panel5g:
+    build: .
+    container_name: panel5g
+    restart: unless-stopped
+    # Només a la IP de la LAN del laboratori (mai 0.0.0.0)
+    ports:
+      - "${PANEL_IP:?Defineix PANEL_IP (IP LAN d aquest PC)}:8443:8443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # agent local al pont de Docker
+    environment:
+      PANEL_CONFIG_DIR: /config
+      PANEL_SECRET_FILE: /certs/panel5g-session.secret
+    volumes:
+      - ./config:/config:ro
+      - ./certs:/certs:ro
+    # Sense docker.sock ni carpetes dels projectes
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    pids_limit: 128

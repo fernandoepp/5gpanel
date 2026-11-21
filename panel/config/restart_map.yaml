@@ -1,0 +1,17 @@
+# Mapa "clau del .env -> serveis de docker compose que cal RECREAR".
+# El panell fa la unió dels serveis de totes les claus canviades.
+# "*" és el valor per defecte per a les claus que no surten.
+# Llista buida = el panell no en proposa cap i l'administrador els tria a mà.
+#
+# Important: els canvis del .env només s'apliquen quan el contenidor es recrea
+# (docker compose up -d <servei>). Un "docker restart" NO llegeix el .env.
+
+radio:
+  "*": [gnb]
+
+core:
+  # PENDENT DE DEFINIR. Exemple orientatiu (sense verificar):
+  # MCC: [nrf, scp, ausf, udm, udr, pcf, bsf, nssf, amf, smf, upf]
+  # MNC: [nrf, scp, ausf, udm, udr, pcf, bsf, nssf, amf, smf, upf]
+  # UPF_ADVERTISE_IP: [upf]
+  "*": []

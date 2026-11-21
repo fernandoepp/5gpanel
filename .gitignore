@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+certs/
+certs-5g/
+*.key
+*.secret
+panel/certs/

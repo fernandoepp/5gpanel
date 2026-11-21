@@ -1,0 +1,22 @@
+[Unit]
+Description=User-Agent HTTP dels UEs (GTP-U, UDP 2152): només IP del UE + User-Agent, per a agent5g
+After=network-online.target docker.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/install -d -m 700 /var/lib/agent5g
+ExecStart=/usr/bin/python3 /opt/agent5g/ua_capture.py
+Restart=always
+RestartSec=5
+# Només per capturar: res de disc fora de /var/lib/agent5g
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/agent5g
+PrivateTmp=yes
+MemoryMax=400M
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,43 @@
+# Configuració del panell 5G. Es munta en només lectura dins del contenidor.
+
+# Hores que dura una sessió iniciada
+sessio_hores: 8
+
+# Certificats del panell (client mTLS cap als agents) i CA comuna
+ca: /certs/ca.crt
+client_cert: /certs/panel5g-client.crt
+client_key: /certs/panel5g-client.key
+
+# Panell al PC1 (core): l'agent local escolta només al pont de Docker
+# (172.17.0.1) i el de la ràdio a la LAN, amb ufw obert només a la IP del PC1.
+# Si el panell va al PC2, intercanvia-ho (radio -> host.docker.internal,
+# core -> https://<IP_PC1>:9543).
+agents:
+  core:
+    url: https://host.docker.internal:9543
+  radio:
+    url: https://192.168.2.101:9543
+
+# Usuaris. Genera el hash amb:
+#   docker compose run --rm panel5g python -m app.hashpw
+# Rols: admin (pot canviar i aplicar) | lector (només veu estat i logs)
+usuaris:
+  admin:
+    rol: admin
+    hash: "CANVIA-ME"
+
+# Patrons per treure estat dels logs. Si la regex té un grup, es mostra el
+# valor de l'última coincidència; si no, l'hora de l'última coincidència.
+# Són heurístiques: ajusta-les als missatges reals de les teves versions.
+estat_logs:
+  core:
+    - {etiqueta: "gNB connectats a l'AMF", contenidor: amf, regex: "Number of gNBs is now (\\d+)"}
+    - {etiqueta: "UE registrats (AMF)",     contenidor: amf, regex: "Number of AMF-UEs is now (\\d+)"}
+    - {etiqueta: "Sessions PDU (SMF)",      contenidor: smf, regex: "Number of SMF-Sessions is now (\\d+)"}
+    - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\d+)"}
+  radio:
+    - {etiqueta: "N2 amb l'AMF",            contenidor: ocudu_gnb, regex: "Connection to AMF.*completed"}
+    - {etiqueta: "Cel·la",                  contenidor: ocudu_gnb, regex: "(Cell pci=.*)$"}
+
+# Línies de log que es llegeixen per calcular l'estat
+estat_linies: 1000

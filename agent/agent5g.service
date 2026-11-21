@@ -1,0 +1,31 @@
+[Unit]
+Description=agent5g - agent mTLS per al panell 5G
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/agent5g/agent5g.py -c /etc/agent5g/agent5g.json
+Restart=on-failure
+RestartSec=5
+# Necessita root (o grup docker, que és equivalent) per parlar amb Docker.
+# La resta del sistema queda en només lectura.
+User=root
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/agent5g
+# Afegeix aquí la carpeta del projecte (on hi ha el .env), p. ex.:
+# ReadWritePaths=/home/core5g/Escritorio/5g/ocudu/docker
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
