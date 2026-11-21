@@ -2,6 +2,8 @@
 Description=Captura N2 (NGAP, SCTP 38412) i SBI (HTTP/2 7777, per al PEI) en buffer circular per a agent5g
 After=network-online.target docker.service
 
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 # 10 fitxers de 20 MB com a màxim; els antics es reaprofiten

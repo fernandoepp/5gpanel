@@ -186,6 +186,10 @@ async def descobreix():
             if not r:
                 continue
             url, h = r
+            # el core ja configurat a panel.yaml (p. ex. host.docker.internal) no es duplica
+            # quan el seu agent també respon per la IP de la LAN
+            if h['role'] == 'core' and any(x['rol'] == 'core' and not x['descobert'] for x in AGENTS.values()):
+                continue
             nom = f"{h['role']}-{ip}"
             trobats.add(nom)
             _FALLADES.pop(nom, None)

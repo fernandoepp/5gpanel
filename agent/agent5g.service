@@ -1,14 +1,16 @@
 [Unit]
 Description=agent5g - agent mTLS per al panell 5G
 After=network-online.target docker.service
-Wants=network-online.target
-Requires=docker.service
+Wants=network-online.target docker.service
+# Sempre en marxa: sense límit de reintents, i no s'atura si Docker o el panell es reinicien
+# (Wants en lloc de Requires: un reinici de Docker no arrossega l'agent).
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/agent5g/agent5g.py -c /etc/agent5g/agent5g.json
-Restart=on-failure
-RestartSec=5
+Restart=always
+RestartSec=3
 # Necessita root (o grup docker, que és equivalent) per parlar amb Docker.
 # La resta del sistema queda en només lectura.
 User=root

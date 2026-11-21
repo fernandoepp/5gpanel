@@ -149,9 +149,9 @@ descobriment:
   port: 9543
   interval_s: 120
 ```
-Radio nueva: donde tengas la CA, `scripts/gen_certs.sh --radio <IP> certs-5g` → `certs-5g/agent-radio-<IP>/`.
-En la radio: `sudo scripts/install_agent.sh radio <esa carpeta> <IP_panel>` y en `/etc/agent5g/agent5g.json`
-`"listen": "<IP>"`, `"port": 9543` y, si quieres, `"name": "Ràdio aula 2"`.
+Radio nueva: en el core, `sudo emparella-radio <IP_radio>` imprime el **código de emparejamiento**
+(ver más abajo) y en la radio `install_radio.sh` lo pide. Se puede poner `"name": "Ràdio aula 2"` en
+`/etc/agent5g/agent5g.json` de la radio.
 
 ## Servicio VoIP activable
 Abonats i VoIP → «Servei de telefonia» → Activado. El agente del core, en segundo plano:
@@ -165,11 +165,41 @@ Requisitos: el `project_dir` del core debe tener `sa-vonr-deploy.yaml` y las car
 Desde v15, guardar un abonado con número (VoIP activo) lo da de alta en IMS solo; quitarle el número lo da de
 baja. Un número no puede repetirse entre abonados.
 
-## Instalación completa en el core (sin preguntas)
+## Instalación en el core: solo el agente (sin preguntas)
 `sudo bash scripts/install_core.sh <carpeta docker_open5gs> <compose> <IP_LAN> [carpeta_certs]`
-Lo llama `core5g.sh` (paso 12) tras levantar el núcleo: crea la CA si no existe (`/root/certs-5g`,
-modo `gen_certs.sh --core`), instala tshark, el agente completo (mTLS en 172.17.0.1:9543, captura NGAP/SBI,
-User-Agent, VoIP activable) con su `agent5g.json` generado del compose real, y el panel en `/opt/panel5g/panel`
-con búsqueda de radios en la /24 del core. La contraseña inicial de `admin` queda en `/root/panel5g-admin.txt`.
-Repetirlo es seguro: no cambia certificados, contraseña ni `panel.yaml` existentes.
+Lo llama `core5g.sh` (paso 12) tras levantar el núcleo. Crea la CA si no existe (`/root/certs-5g`, modo
+`gen_certs.sh --core`, que deja también los certificados del panel en `certs-5g/panel/`), instala tshark y
+**solo el agente del core** (mTLS en `0.0.0.0:9543`, captura NGAP/SBI, User-Agent, VoIP activable) con su
+`agent5g.json` generado del compose real. **No instala el panel** (eso es `scripts/install_panel.sh`, aparte).
+Al final imprime el código de emparejamiento de cada radio: `CORE5G_RADIOS="IP1 IP2"` o, con terminal, lo
+pregunta. Repetirlo es seguro: no cambia certificados existentes.
 `core5g.sh` descarga este repositorio de `CORE5G_PANELL_REPO` (o usa `--panell carpeta|tar.gz`; `--sense-panell` lo omite).
+
+### Código de emparejamiento
+`sudo emparella-radio <IP_radio>` (en el core, donde está la CA) emite el certificado de esa radio y
+imprime un bloque `-----BEGIN 5GPANEL EMPARELLAMENT <IP>----- … -----END 5GPANEL EMPARELLAMENT-----`:
+base64 de un tar.gz con `ca.crt`, `agent-radio.crt` y `agent-radio.key`. **Nunca lleva `ca.key`**, pero sí
+la clave privada del agente de esa radio: no lo publiques. Se guarda también en
+`/root/certs-5g/emparellament-<IP>.txt` por si prefieres copiarlo con scp.
+
+## Instalación de la radio (guía de despliegue, apartado de la parte radio)
+`sudo bash scripts/install_radio.sh [--core IP] [--radio IP] [--emparellament fichero] [--ocudu DIR] [--sense-build] [--sense-agent]`
+1. git, curl y Docker (get.docker.com), usuario al grupo docker.
+2. `git clone https://gitlab.com/ocudu/ocudu.git` en `~/ocudu` (si ya está, no toca el código).
+3. `docker/docker-compose.yml` unificado (Anexo A): un solo servicio `gnb`, `network_mode: host`, toda la
+   configuración dentro parametrizada con el `.env` (el original queda en `docker-compose.yml.orig`).
+4. `docker/.env` con el bloque del Anexo B delante; el resto del `.env` se conserva. Valores: los que ya
+   tenga el `.env` > variables de entorno (`PLMN=… TAC=…`) > los de la guía.
+5. Imágenes UHD de la B210 (`uhd_images_downloader`).
+6. `docker compose -f docker/docker-compose.yml build` (~40 min la primera vez) y `up -d`.
+7. Agente de la radio (mTLS en `<IP_radio>:9543`) con los certificados del código de emparejamiento.
+
+El código se valida **antes** de la parte lenta (que sea de esa IP y de la misma CA).
+Diferencias con la guía para que el panel pueda gestionarla: `PLMN_1` en vez de `PLMN`, antenas
+parametrizadas (`RX_ANTENA`/`TX_ANTENA`, 1 por defecto) y el gNB arranca en segundo plano (`docker logs -f ocudu_gnb`).
+Si ufw está activo no se toca: el script indica la regla para abrir el 9543 a la /24.
+
+## Siempre en marcha
+`agent5g`, `ngap-capture` y `ua-capture` son servicios systemd habilitados con `Restart=always`,
+`RestartSec=3` y sin límite de reintentos (`StartLimitIntervalSec=0`): arrancan solos al encender el PC,
+vuelven si se caen o se reinicia Docker, y no dependen del panel (si el panel se reinicia, los agentes siguen).

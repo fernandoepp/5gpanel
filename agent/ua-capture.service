@@ -2,6 +2,8 @@
 Description=User-Agent HTTP dels UEs (GTP-U, UDP 2152): només IP del UE + User-Agent, per a agent5g
 After=network-online.target docker.service
 
+StartLimitIntervalSec=0
+
 [Service]
 Type=simple
 ExecStartPre=/usr/bin/install -d -m 700 /var/lib/agent5g

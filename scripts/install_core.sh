@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
-# Instal·lació completa al PC del core, sense preguntes (la crida core5g.sh):
-#   agent5g (mTLS, 172.17.0.1:9543) + captura NGAP/SBI + model del mòbil (User-Agent)
-#   + panell web (https://<IP>:8443) amb cerca automàtica de ràdios.
+# Instal·la NOMÉS l'agent del core (la crida core5g.sh), sense preguntes:
+#   agent5g (mTLS al port 9543) + captura NGAP/SBI + model del mòbil (User-Agent),
+#   tots tres com a serveis systemd que es reinicien sempre (també després d'un reinici
+#   del PC, de Docker o del panell).
+# Al final imprimeix el CODI D'EMPARELLAMENT de cada ràdio (CORE5G_RADIOS="IP1 IP2" o,
+# si hi ha terminal, ho pregunta). Més endavant: sudo emparella-radio <IP>.
 #
 #   sudo ./install_core.sh <carpeta_docker_open5gs> <fitxer_compose> <IP_LAN> [carpeta_certs]
 #
-# carpeta_certs (per defecte /root/certs-5g): si no hi ha CA, se'n crea una amb
-# gen_certs.sh --core. Les ràdios s'afegeixen després amb gen_certs.sh --radio <IP>.
-# Tornar-lo a executar és segur: no canvia certificats, contrasenya ni panel.yaml
-# existents; només actualitza el codi i la configuració de l'agent.
+# carpeta_certs (per defecte /root/certs-5g): si no hi ha CA, se'n crea una (gen_certs.sh --core).
+# Hi queden també els certificats del panell (panel/), per quan s'instal·li.
+# Tornar-lo a executar és segur: no canvia els certificats existents.
 set -euo pipefail
 PROJ=${1:?carpeta del projecte docker_open5gs}
 COMPOSE=${2:?fitxer compose (sa-deploy.yaml o sa-vonr-deploy.yaml)}
@@ -16,13 +18,9 @@ IP=${3:?IP LAN del core}
 CERTS=${4:-/root/certs-5g}
 [[ $EUID -eq 0 ]] || { echo "Executa amb sudo"; exit 1; }
 SRC=$(cd "$(dirname "$0")/.." && pwd)
-PANEL_DIR=${PANEL_DIR:-/opt/panel5g/panel}
 PORT=9543
-DOCKER_BRIDGE=172.17.0.1
 [[ -f "$PROJ/.env" && -f "$PROJ/$COMPOSE" ]] || { echo "No trobo $PROJ/.env o $PROJ/$COMPOSE"; exit 1; }
 [[ $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "IP invàlida: $IP"; exit 1; }
-ip -4 addr show docker0 2>/dev/null | grep -q "$DOCKER_BRIDGE" \
-  || echo "AVÍS: docker0 no té $DOCKER_BRIDGE; l'agent no arrencarà fins que Docker l'hagi creat"
 info() { echo "    $*"; }
 
 # ---- 1. certificats
@@ -32,8 +30,8 @@ if [[ ! -f "$CERTS/ca/ca.crt" ]]; then
 else
   info "certificats existents a $CERTS"
 fi
-[[ -f "$CERTS/agent-core/agent-core.crt" && -f "$CERTS/panel/panel5g-client.crt" ]] \
-  || { echo "A $CERTS falten agent-core/ o panel/: torna a generar-los amb gen_certs.sh --core $IP $CERTS"; exit 1; }
+[[ -f "$CERTS/agent-core/agent-core.crt" ]] \
+  || { echo "A $CERTS falta agent-core/: torna a generar-los amb gen_certs.sh --core $IP $CERTS"; exit 1; }
 
 # ---- 2. paquets (tshark sense preguntes: sense captura per a usuaris no root)
 if ! command -v tshark >/dev/null || ! command -v dumpcap >/dev/null; then
@@ -64,7 +62,7 @@ ims = {'dns', 'mysql', 'rtpengine', 'pyhss', 'icscf', 'scscf', 'pcscf', 'smsc'}
 nucli = [s for s in serveis if s not in ims]          # els IMS els gestiona el bloc "voip"
 cfg = {
     'role': 'core', 'name': old.get('name', 'Core 5G'),
-    'listen': '172.17.0.1', 'port': 9543,
+    'listen': '0.0.0.0', 'port': 9543,
     'cert': '/etc/agent5g/certs/agent-core.crt', 'key': '/etc/agent5g/certs/agent-core.key',
     'ca': '/etc/agent5g/certs/ca.crt', 'allowed_client_cn': ['panel5g'],
     'project_dir': os.environ['PROJ'], 'env_file': '.env',
@@ -96,75 +94,27 @@ systemctl daemon-reload
 systemctl enable --now ngap-capture ua-capture agent5g >/dev/null 2>&1
 systemctl restart ngap-capture ua-capture agent5g
 
-# ---- 4. panell
-install -d -m 755 "$(dirname "$PANEL_DIR")"
-if [[ -d "$PANEL_DIR/app" ]]; then
-  cp -a "$PANEL_DIR/app" "/var/lib/agent5g/panell-app-$(date +%Y%m%d-%H%M%S)"
-fi
-install -d -m 755 "$PANEL_DIR" "$PANEL_DIR/config"
-cp -a "$SRC/panel/Dockerfile" "$SRC/panel/requirements.txt" "$SRC/panel/docker-compose.yml" "$PANEL_DIR/"
-rm -rf "$PANEL_DIR/app"; cp -a "$SRC/panel/app" "$PANEL_DIR/app"; find "$PANEL_DIR/app" -name __pycache__ -prune -exec rm -rf {} +
-for f in schema.yaml restart_map.yaml; do install -m 644 "$SRC/panel/config/$f" "$PANEL_DIR/config/"; done
-for f in tac.csv models.csv; do
-  [[ -f "$PANEL_DIR/config/$f" || ! -f "$SRC/panel/config/$f" ]] || install -m 644 "$SRC/panel/config/$f" "$PANEL_DIR/config/"
-done
-install -d -m 750 "$PANEL_DIR/certs"
-cp "$CERTS"/panel/{ca.crt,panel5g-client.crt,panel5g-client.key,panel5g-web.crt,panel5g-web.key,panel5g-session.secret} "$PANEL_DIR/certs/"
-chown -R 10001:10001 "$PANEL_DIR/certs"; chmod 600 "$PANEL_DIR"/certs/*.key "$PANEL_DIR/certs/panel5g-session.secret"
-CONTRA_FITXER=/root/panel5g-admin.txt
-if [[ ! -f "$PANEL_DIR/config/panel.yaml" ]]; then
-  PASS=$(python3 -c 'import secrets; print(secrets.token_urlsafe(12))')
-  HASH=$(printf '%s\n' "$PASS" | PYTHONPATH="$PANEL_DIR" python3 -c 'import sys; from app.auth import hash_password; print(hash_password(sys.stdin.readline().strip()))')
-  ( umask 077; printf 'Panell 5G: https://%s:8443\nusuari: admin\ncontrasenya: %s\n' "$IP" "$PASS" > "$CONTRA_FITXER" )
-  XARXA=$(python3 -c "import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1] + '/24', strict=False))" "$IP")
-  cat > "$PANEL_DIR/config/panel.yaml" <<YAML
-# Configuració del panell 5G (generada per install_core.sh). Es munta en només lectura.
-sessio_hores: 8
-ca: /certs/ca.crt
-client_cert: /certs/panel5g-client.crt
-client_key: /certs/panel5g-client.key
-
-# L'agent del core escolta al pont de Docker. Les ràdios es troben soles (descobriment).
-agents:
-  core:
-    url: https://host.docker.internal:$PORT
-
-# Cerca de ràdios: agents amb certificat d'aquesta CA (gen_certs.sh --radio <IP>)
-descobriment:
-  actiu: true
-  xarxes: ["$XARXA"]
-  port: $PORT
-  interval_s: 120
-
-# Usuaris. Nova contrasenya: docker compose run --rm panel5g python -m app.hashpw
-usuaris:
-  admin:
-    rol: admin
-    hash: "$HASH"
-
-estat_logs:
-  core:
-    - {etiqueta: "gNB connectats a l'AMF", contenidor: amf, regex: "Number of gNBs is now (\\\\d+)"}
-    - {etiqueta: "UE registrats (AMF)",     contenidor: amf, regex: "Number of AMF-UEs is now (\\\\d+)"}
-    - {etiqueta: "Sessions PDU (SMF)",      contenidor: smf, regex: "Number of SMF-Sessions is now (\\\\d+)"}
-    - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\\\d+)"}
-  radio:
-    - {etiqueta: "N2 amb l'AMF",            contenidor: ocudu_gnb, regex: "Connection to AMF.*completed"}
-    - {etiqueta: "Cel·la",                  contenidor: ocudu_gnb, regex: "(Cell pci=.*)$"}
-estat_linies: 1000
-YAML
-  info "panell: panel.yaml nou; usuari admin, contrasenya a $CONTRA_FITXER"
-else
-  info "panell: es conserva el panel.yaml existent"
-fi
-chmod 644 "$PANEL_DIR/config/"*
-chown 10001:10001 "$PANEL_DIR/config/panel.yaml"; chmod 640 "$PANEL_DIR/config/panel.yaml"   # porta el hash d'admin
-(cd "$PANEL_DIR" && PANEL_IP="$IP" docker compose up -d --build >/dev/null 2>&1) \
-  || { echo "ERROR: no s'ha pogut arrencar el panell (cd $PANEL_DIR && PANEL_IP=$IP docker compose up -d --build)"; exit 1; }
+# ---- 4. eines d'emparellament (emparella-radio <IP>)
+install -d -m 755 /opt/agent5g/eines
+install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
+ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
+# perquè emparella-radio trobi els certificats encara que no siguin a /root/certs-5g
+sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh
 
 sleep 3
 for s in agent5g ngap-capture ua-capture; do
-  systemctl is-active -q "$s" && info "$s: actiu" || echo "    AVÍS: $s no està actiu (journalctl -u $s)"
+  systemctl is-active -q "$s" && info "$s: actiu (s'inicia sol en arrencar i es reinicia sempre)" \
+    || echo "    AVÍS: $s no està actiu (journalctl -u $s)"
 done
-info "panell: https://$IP:8443 (importa $CERTS/ca/ca.crt al navegador)"
-info "guarda $CERTS/ca/ca.key fora del PC: amb ella s'emeten els certificats de les ràdios"
+info "certificats del panell (per quan l'instal·lis): $CERTS/panel"
+info "$CERTS/ca/ca.key és la clau de la CA: no la copiïs enlloc (emparella-radio la necessita aquí)"
+
+# ---- 5. codi d'emparellament de les ràdios
+RADIOS=${CORE5G_RADIOS:-}
+if [[ -z $RADIOS && -t 0 ]]; then
+  read -r -p "    IP de la ràdio (o ràdios, separades per espais) a emparellar ara [buit = més tard]: " RADIOS || RADIOS=""
+fi
+for R in $RADIOS; do
+  /usr/local/sbin/emparella-radio "$R" "$CERTS" || echo "    AVÍS: no s'ha pogut emparellar $R"
+done
+[[ -n $RADIOS ]] || info "per emparellar una ràdio més endavant: sudo emparella-radio <IP_de_la_ràdio>"
