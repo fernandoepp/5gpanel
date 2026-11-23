@@ -3,6 +3,8 @@
 Fonts:
   * captura NGAP (agent /gnbs): NG Setup Request/Response/Failure -> gNB-ID, nom,
     PLMN, TAC, slices, Paging DRX, AMF que l'accepta i historial d'intents
+  * estat en viu de l'AMF (agent /estat5g, API /gnb-info d'Open5GS): quins gNB hi ha ara
+    connectats, amb gNB-ID, nom, PLMN, TAC i slices. Mana sobre el log i la captura.
   * log de l'AMF -> connexions/desconnexions SCTP (N2) per IP i avisos de NG Setup
   * fitxes d'UE (devices.py) -> quins UEs són a cada gNB (pel CellID: gNB-ID + cel·la)
   * agent de la ràdio -> configuració del gNB local (.env d'ocudu) i estat del contenidor
@@ -34,7 +36,7 @@ def _secs(iso):
         return None
 
 
-def build(amf_log, captured=None, ues=None, radios=None):
+def build(amf_log, captured=None, ues=None, radios=None, viu=None):
     gnbs = {}
     n_gnbs = None
 
@@ -87,8 +89,39 @@ def build(amf_log, captured=None, ues=None, radios=None):
             if d['connectat'] is None and last['resultat'] != 'ok':
                 d['connectat'] = False
 
+    # ---- estat en viu de l'AMF: el que hi ha connectat ara mateix
+    if viu is not None:
+        ara = set()
+        for v in viu:
+            if not v.get('ip'):
+                continue
+            d = g(v['ip'])
+            ara.add(v['ip'])
+            d['connectat'] = True
+            d['ng_setup_ok'] = v.get('setup_ok')
+            d['port'] = v.get('port') or d['port']
+            for k in ('gnb_id', 'nom', 'tacs', 'slices', 'amf'):
+                if v.get(k) not in (None, []):
+                    d[k] = v[k]
+            plmn = v.get('plmn') or ''
+            if len(plmn) in (5, 6):
+                d['mcc'], d['mnc'] = plmn[:3], plmn[3:]
+            if v.get('plmns'):
+                d['plmns'] = v['plmns']
+        for ip, d in gnbs.items():
+            if ip not in ara and d['connectat']:
+                d['connectat'] = False          # l'AMF ja no el té
+        n_gnbs = len(ara)
+
     # ---- UEs per gNB: NR CellID (36 bits) = gNB-ID (22-32 bits) + cel·la
     for u in ues or []:
+        if u.get('gnb_id') is not None:         # l'AMF ja diu a quin gNB és
+            cands = [d for d in gnbs.values() if d.get('gnb_id') == u['gnb_id']]
+            if cands:
+                d = next((x for x in cands if x['connectat']), cands[0])
+                d['ues'].append({'imsi': u.get('imsi'), 'nom': u.get('nom') or (u.get('dispositiu') or {}).get('model'),
+                                 'estat': u.get('estat'), 'cella': u.get('cella'), 'tac': u.get('tac')})
+                continue
         cid = u.get('cell_id')
         if not cid:
             continue
