@@ -717,10 +717,11 @@ async def _safe(coro, default):
         return default, str(e.detail)
 
 
-async def _core_data(t, user, gnbs=False):
+async def _core_data(t, user, gnbs=False, historial=True):
     """Quins dispositius i gNB hi ha: NOMÉS l'estat en viu de l'AMF i l'SMF (agent /estat5g,
     API JSON d'Open5GS). Els logs de l'AMF/SMF només afegeixen l'historial d'aquests mateixos
-    dispositius i gNB. Sense captura (tshark). -> (health, devs, extra, fonts)"""
+    dispositius i gNB. Sense captura (tshark). Amb historial=False no llegeix els logs (resposta
+    ràpida: el navegador pinta això primer i després demana l'historial). -> (health, devs, extra, fonts)"""
     health = await agent(t, 'GET', '/health', user)
     conts = health.get('containers', [])
     if 'amf' not in conts:
@@ -728,7 +729,7 @@ async def _core_data(t, user, gnbs=False):
     n = 2000
 
     async def logs_of(c):
-        if c not in conts:
+        if not historial or c not in conts:
             return ''
         return (await agent(t, 'GET', '/logs', user, params={'container': c, 'tail': n}))['log']
 
@@ -741,16 +742,17 @@ async def _core_data(t, user, gnbs=False):
         _safe(estat(), {}), _safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''))
     errs = (viu or {}).get('errors') or {}
     fonts = {'estat_viu': e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok'),
-             'historial': 'ok' if not (e1 or e2) else '; '.join(x for x in (e1, e2) if x)}
+             'historial': ('ok' if not (e1 or e2) else '; '.join(x for x in (e1, e2) if x))
+             if historial else 'pendent'}
     devs = build_devices(amf, smf, None, TAC, load_noms(), models=MODELS, viu=viu, nomes_viu=True)
     extra = {'amf_log': amf, 'viu': viu, 'gnbs': None}
     return health, devs, extra, fonts
 
 
 @app.get('/api/ues/{t}')
-async def ues(t: str, s=Depends(admin_read)):
+async def ues(t: str, historial: bool = True, s=Depends(admin_read)):
     # Només admin: IMSI i IMEI són dades personals dels qui connecten el mòbil
-    _, devs, _, fonts = await _core_data(t, s['user'])
+    _, devs, _, fonts = await _core_data(t, s['user'], historial=historial)
     return {'dispositius': devs, 'fonts': fonts}
 
 
@@ -766,8 +768,8 @@ async def _radio_info(t, user):
 
 
 @app.get('/api/gnbs/{t}')
-async def gnbs(t: str, s=Depends(current_user)):
-    _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True)
+async def gnbs(t: str, historial: bool = True, s=Depends(current_user)):
+    _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True, historial=historial)
     radios = [r for r in await asyncio.gather(*(_radio_info(o, s['user']) for o in targets() if o != t)) if r]
     res = build_gnbs(extra['amf_log'], extra.get('gnbs'), devs, radios,
                      viu=(extra.get('viu') or {}).get('gnbs'), nomes_viu=True)
