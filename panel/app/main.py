@@ -73,8 +73,32 @@ def _secret():
 def _ssl_ctx():
     ctx = ssl.create_default_context(cafile=CFG['ca'])
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Els agents s'identifiquen pel certificat (signat per LA NOSTRA CA i amb CN agent-*),
+    # no per la IP: així un canvi de xarxa (DHCP) no obliga a tornar a emetre certificats.
+    # El CN es comprova a cada resposta (_check_peer).
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.load_cert_chain(CFG['client_cert'], CFG['client_key'])
     return ctx
+
+
+def _peer_cn(r):
+    stream = r.extensions.get('network_stream')
+    sslobj = stream.get_extra_info('ssl_object') if stream else None
+    cert = sslobj.getpeercert() if sslobj else None
+    for rdn in (cert or {}).get('subject', ()):
+        for k, v in rdn:
+            if k == 'commonName':
+                return v
+    return None
+
+
+def _check_peer(r):
+    """Només acceptem agents: certificat de la CA (ja verificat pel TLS) amb CN agent-core o agent-radio*."""
+    cn = _peer_cn(r) or ''
+    if not (cn == 'agent-core' or cn.startswith('agent-radio')):
+        raise httpx.ConnectError(f'certificat no és d\'un agent (CN={cn or "?"})')
+    return cn
 
 
 _CTX = None
@@ -92,7 +116,13 @@ def client(target, timeout=15.0):
 async def agent(target, method, path, user='-', timeout=15.0, **kw):
     try:
         async with client(target, timeout) as c:
-            r = await c.request(method, path, headers={'X-Panel-User': user}, **kw)
+            # en streaming: el certificat de l'agent només es pot llegir amb la connexió oberta
+            r = await c.send(c.build_request(method, path, headers={'X-Panel-User': user}, **kw), stream=True)
+            try:
+                _check_peer(r)
+                await r.aread()
+            finally:
+                await r.aclose()
     except httpx.HTTPError as e:
         raise HTTPException(502, f'agent {target} no accessible: {type(e).__name__}')
     data = r.json() if r.headers.get('content-type', '').startswith('application/json') else {}
@@ -125,9 +155,9 @@ def _desc_port():
 
 def _desc_xarxes():
     xs = DESC_CFG.get('xarxes')
-    if xs is None:      # per defecte: la /24 de cada agent de panel.yaml que tingui IP de LAN
+    if xs is None:      # per defecte: la /24 del panell (PANEL_IP) i la de cada agent de panel.yaml amb IP de LAN
         xs = []
-        for a in AGENTS.values():
+        for a in [{'ip': os.environ.get('PANEL_IP')}] + list(AGENTS.values()):
             try:
                 ip = ipaddress.ip_address(a['ip'] or '')
             except ValueError:
@@ -159,7 +189,12 @@ async def _prova(ip, port):
     url = f'https://{ip}:{port}'
     try:
         async with httpx.AsyncClient(base_url=url, verify=_CTX, timeout=5.0, trust_env=False) as c:
-            r = await c.get('/health', headers={'X-Panel-User': 'descobriment'})
+            r = await c.send(c.build_request('GET', '/health', headers={'X-Panel-User': 'descobriment'}), stream=True)
+            try:
+                _check_peer(r)
+                await r.aread()
+            finally:
+                await r.aclose()
         h = r.json()
     except (httpx.HTTPError, ValueError, ssl.SSLError):
         return None

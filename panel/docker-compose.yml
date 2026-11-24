@@ -11,6 +11,7 @@ services:
       - "host.docker.internal:host-gateway"   # agent local al pont de Docker
     environment:
       PANEL_CONFIG_DIR: /config
+      PANEL_IP: ${PANEL_IP}            # per buscar ràdios a la seva /24 si canvia la xarxa
       PANEL_SECRET_FILE: /certs/panel5g-session.secret
     volumes:
       - ./config:/config:ro

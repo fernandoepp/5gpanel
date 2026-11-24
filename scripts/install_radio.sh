@@ -332,7 +332,7 @@ if os.path.isfile(f):
 ip = r'^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 cfg = {
     'role': 'radio', 'name': old.get('name', f"Ràdio {os.environ['RIP']}"),
-    'listen': os.environ['RIP'], 'port': int(os.environ['PORT']),
+    'listen': 'auto', 'port': int(os.environ['PORT']),   # segueix la IP de la LAN encara que canviï
     'cert': '/etc/agent5g/certs/agent-radio.crt', 'key': '/etc/agent5g/certs/agent-radio.key',
     'ca': '/etc/agent5g/certs/ca.crt', 'allowed_client_cn': ['panel5g'],
     'project_dir': os.environ['PROJ'], 'env_file': '.env',
