@@ -677,7 +677,7 @@ async function carregaUEs() {
   try {
     const d = await api('GET', `/api/ues/${t}`);
     const f = d.fonts || {};
-    $('#ue-fonts').textContent = `Font: estat en viu de l'AMF i l'SMF (${f.estat_viu || '—'}). Actualitzat ${new Date().toLocaleTimeString()}.`;
+    $('#ue-fonts').textContent = `Font: estat en viu de l'AMF i l'SMF (${f.estat_viu || '—'}); historial dels logs (${f.historial || '—'}). Actualitzat ${new Date().toLocaleTimeString()}.`;
     if (!d.dispositius.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap dispositiu ara mateix.')); return; }
     const n = (e) => d.dispositius.filter((u) => u.estat === e).length;
     box.replaceChildren(
@@ -758,7 +758,7 @@ async function carregaGnbs() {
   try {
     const d = await api('GET', `/api/gnbs/${t}`);
     const f = d.fonts || {};
-    $('#gnb-fonts').textContent = `Font: estat en viu de l'AMF (${f.estat_viu || '—'}). ` +
+    $('#gnb-fonts').textContent = `Font: estat en viu de l'AMF (${f.estat_viu || '—'}); historial del log (${f.historial || '—'}). ` +
       (d.n_gnbs_amf != null ? `L'AMF diu que té ${d.n_gnbs_amf} gNB. ` : '') + `Actualitzat ${new Date().toLocaleTimeString()}.`;
     if (!d.gnbs.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap gNB connectat ara mateix.')); return; }
     const n = d.gnbs.filter((g) => g.connectat || g.connectat_probable).length;

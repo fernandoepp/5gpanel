@@ -168,7 +168,9 @@ class Dev(dict):
 
 
 def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents=None, models=None,
-          viu=None):
+          viu=None, nomes_viu=False):
+    """nomes_viu: només surten els dispositius que l'AMF/SMF tenen ara (estat en viu); els logs
+    hi afegeixen l'historial però no en creen de nous."""
     devs = {}            # clau: imsi o suci
     suci2imsi = {}
     tmsi2key = {}
@@ -432,6 +434,10 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
                 info['so'] = p['so']
 
     # ---- acabats
+    if nomes_viu:
+        vius = {u.get('imsi') or u.get('suci') for u in viu.get('ues') or []}
+        vius |= {p.get('imsi') for p in viu.get('pdus') or []}
+        devs = {k: d for k, d in devs.items() if k in vius}
     out = []
     for k, d in devs.items():
         info = d['dispositiu']

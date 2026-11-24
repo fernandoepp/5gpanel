@@ -718,21 +718,32 @@ async def _safe(coro, default):
 
 
 async def _core_data(t, user, gnbs=False):
-    """Estat en viu de l'AMF i l'SMF (agent /estat5g, API JSON d'Open5GS) -> (health, devs, extra, fonts).
-    Els dispositius i els gNB surten NOMÉS d'aquí: ni logs ni captura (tshark)."""
+    """Quins dispositius i gNB hi ha: NOMÉS l'estat en viu de l'AMF i l'SMF (agent /estat5g,
+    API JSON d'Open5GS). Els logs de l'AMF/SMF només afegeixen l'historial d'aquests mateixos
+    dispositius i gNB. Sense captura (tshark). -> (health, devs, extra, fonts)"""
     health = await agent(t, 'GET', '/health', user)
-    if 'amf' not in health.get('containers', []):
+    conts = health.get('containers', [])
+    if 'amf' not in conts:
         raise HTTPException(404, 'aquest equip no té AMF')
-    fonts = {}
-    viu = {}
-    if not health.get('estat5g'):
-        fonts['estat_viu'] = 'agent sense /estat5g (actualitza l\'agent)'
-    else:
-        viu, err = await _safe(agent(t, 'GET', '/estat5g', user, timeout=30.0), {})
-        errs = (viu or {}).get('errors') or {}
-        fonts['estat_viu'] = err or ('; '.join(sorted(set(errs.values()))) if errs else 'ok')
-    devs = build_devices('', '', None, TAC, load_noms(), models=MODELS, viu=viu)
-    extra = {'amf_log': '', 'viu': viu, 'gnbs': None}
+    n = 2000
+
+    async def logs_of(c):
+        if c not in conts:
+            return ''
+        return (await agent(t, 'GET', '/logs', user, params={'container': c, 'tail': n}))['log']
+
+    async def estat():
+        if not health.get('estat5g'):
+            raise HTTPException(502, 'agent sense /estat5g (actualitza l\'agent)')
+        return await agent(t, 'GET', '/estat5g', user, timeout=30.0)
+
+    (viu, e5), (amf, e1), (smf, e2) = await asyncio.gather(
+        _safe(estat(), {}), _safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''))
+    errs = (viu or {}).get('errors') or {}
+    fonts = {'estat_viu': e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok'),
+             'historial': 'ok' if not (e1 or e2) else '; '.join(x for x in (e1, e2) if x)}
+    devs = build_devices(amf, smf, None, TAC, load_noms(), models=MODELS, viu=viu, nomes_viu=True)
+    extra = {'amf_log': amf, 'viu': viu, 'gnbs': None}
     return health, devs, extra, fonts
 
 
@@ -759,7 +770,7 @@ async def gnbs(t: str, s=Depends(current_user)):
     _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True)
     radios = [r for r in await asyncio.gather(*(_radio_info(o, s['user']) for o in targets() if o != t)) if r]
     res = build_gnbs(extra['amf_log'], extra.get('gnbs'), devs, radios,
-                     viu=(extra.get('viu') or {}).get('gnbs'))
+                     viu=(extra.get('viu') or {}).get('gnbs'), nomes_viu=True)
     if s['rol'] != 'admin':                       # el lector no veu IMSI
         for g in res['gnbs']:
             g['ues'] = [{k: v for k, v in u.items() if k not in ('imsi', 'nom')} for u in g['ues']]
