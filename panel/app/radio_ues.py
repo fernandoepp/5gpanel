@@ -27,9 +27,11 @@ def associa(viu, radios):
         fonts[r['titol']] = d.get('error') or ('ok' if d.get('connectat') else 'sense dades del gNB')
         if d.get('log') and d.get('log') != 'ok' and d.get('ues'):
             fonts[r['titol']] += f' · associació: {d["log"]}'
+        camps = d.get('hist_camps') or []
         pendents = []
         for m in d.get('ues') or []:
-            m = dict(m, radio=r['titol'], desti=r['desti'])
+            # historial (files amb els camps de hist_camps; t en segons epoch): el navegador l'acumula per IMSI
+            m = dict(m, radio=r['titol'], desti=r['desti'], hist_camps=camps)
             u = per_amf.get(_s(m.get('amf_ue_ngap_id')))
             if u and (m.get('ran_ue_ngap_id') is None or u.get('ran_ue_ngap_id') is None
                       or _s(m['ran_ue_ngap_id']) == _s(u['ran_ue_ngap_id'])):

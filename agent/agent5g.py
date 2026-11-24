@@ -2063,7 +2063,11 @@ def ua_list():
 RADIO_CAMPS = ('pci', 'cqi', 'dl_ri', 'ul_ri', 'ri', 'dl_mcs', 'ul_mcs', 'dl_brate', 'ul_brate',
                'dl_nof_ok', 'dl_nof_nok', 'ul_nof_ok', 'ul_nof_nok', 'pusch_snr_db', 'pusch_rsrp_db',
                'pucch_snr_db', 'ta_ns', 'pusch_ta_ns', 'last_phr', 'bsr', 'dl_bs')
-RADIO = {'ues': {}, 'connectat': False, 'error': None, 'darrer': None, 'versio': None,
+# Historial curt per als gràfics del panell: una mostra per segon i per RNTI, 5 minuts.
+HIST_CAMPS = ('cqi', 'dl_ri', 'ul_ri', 'dl_mcs', 'ul_mcs', 'dl_brate', 'ul_brate', 'dl_nof_ok', 'dl_nof_nok',
+              'ul_nof_ok', 'ul_nof_nok', 'pusch_snr_db', 'pusch_rsrp_db')
+HIST_MAX = 300
+RADIO = {'ues': {}, 'hist': {}, 'connectat': False, 'error': None, 'darrer': None, 'versio': None,
          'fil': None, 'demanat': 0.0, 'log': {'ino': None, 'pos': 0, 'rnti': {}, 'idx': {}, 'ids': {}, 'linies': 0}}
 RADIO_LOCK = threading.Lock()
 RE_RNTI = re.compile(r'\[(?:RRC|CU-CP)\s*\].*?\bue=(\d+) c-rnti=(0x[0-9a-fA-F]+)')
@@ -2190,6 +2194,7 @@ def _radio_missatge(d):
             for ev in c.get('event_list') or []:
                 if isinstance(ev, dict) and ev.get('event_type') == 'ue_rem':
                     RADIO['ues'].pop((pci_cel, _rnti(ev.get('rnti'))), None)
+                    RADIO['hist'].pop((pci_cel, _rnti(ev.get('rnti'))), None)
             for x in c.get('ue_list') or []:
                 u = x.get('ue_container', x) if isinstance(x, dict) else None
                 if not isinstance(u, dict):
@@ -2203,6 +2208,8 @@ def _radio_missatge(d):
                 m['du_ue'] = u.get('ue')
                 m['t'] = t
                 RADIO['ues'][(m.get('pci'), rnti)] = m
+                h = RADIO['hist'].setdefault((m.get('pci'), rnti), deque(maxlen=HIST_MAX))
+                h.append([round(t, 1)] + [m.get(k) for k in HIST_CAMPS])
         RADIO['darrer'] = t
 
 
@@ -2298,10 +2305,12 @@ def radio_ues():
         lim = time.time() - float(cfg['caducitat'])
         for k in [k for k, m in RADIO['ues'].items() if m['t'] < lim]:
             del RADIO['ues'][k]
+            RADIO['hist'].pop(k, None)
         st = RADIO['log']
         out = []
         for m in sorted(RADIO['ues'].values(), key=lambda m: (m.get('pci') or 0, m['rnti'])):
-            m = dict(m)
+            hist = [list(x) for x in RADIO['hist'].get((m.get('pci'), m['rnti']), ())]
+            m = dict(m, hist=hist)
             m['rnti'] = f'0x{m["rnti"]:04x}'
             idx = st['rnti'].get(int(m['rnti'], 16))
             m['cu_ue'] = idx
@@ -2311,7 +2320,7 @@ def radio_ues():
     return {'ts': now(), 'connectat': RADIO['connectat'], 'error': RADIO['error'],
             'darrer': dt.datetime.fromtimestamp(RADIO['darrer'], dt.timezone.utc).isoformat(timespec='seconds')
             if RADIO['darrer'] else None,
-            'radio_ip': read_env().get('RADIO_IP'), 'ues': out,
+            'radio_ip': read_env().get('RADIO_IP'), 'ues': out, 'hist_camps': ['t', *HIST_CAMPS],
             'log': err_log or ('ok' if st['linies'] else 'el log del gNB no té línies RRC/NGAP (cal rrc_level i ngap_level: info)')}
 
 

@@ -732,11 +732,122 @@ function blocRadio(m) {
   const peu = el('p', { class: 'nota' }, `RNTI ${m.rnti} · ${m.radio} · associat ${ass} · fa ${m.edat_s ?? '?'} s`);
   return [el('h3', { title: 'Del planificador del gNB (ocudu), cada segon. No hi ha RSRP/RSSI de baixada per mòbil: el gNB no el mesura.' }, 'Ràdio'), fila, d, peu];
 }
+
+// ---- gràfics: historial per IMSI acumulat al navegador (el gNB canvia el RNTI a cada connexió,
+// però aquí s'ajunta tot per mòbil). Finestra de 5 minuts; un forat de més de 5 s talla la línia.
+const HIST_RADIO = {};          // imsi -> Map(t -> mostra)
+const FINESTRA_S = 300;
+const GRAF_TANCATS = new Set(); // imsi amb els gràfics plegats
+let HOVER = null;               // {clau, t}: es manté en refrescar cada 3 s
+function acumulaHist(imsi, m) {
+  const camps = m.hist_camps || [];
+  const h = HIST_RADIO[imsi] || (HIST_RADIO[imsi] = new Map());
+  for (const fila of m.hist || []) {
+    const o = Object.fromEntries(camps.map((c, i) => [c, fila[i]]));
+    if (typeof o.t === 'number') h.set(o.t, o);
+  }
+  const tmax = Math.max(...h.keys());
+  for (const t of h.keys()) if (t < tmax - FINESTRA_S) h.delete(t);
+}
+const pctKO = (ok, ko) => (ok == null && ko == null ? null : (ok || 0) + (ko || 0) ? (100 * (ko || 0)) / ((ok || 0) + (ko || 0)) : 0);
+const GRAFS = [
+  { id: 'vel', titol: 'Velocitat', unitat: 'Mbit/s', min: 0, dec: 1,
+    series: [['Baixada', (x) => (x.dl_brate == null ? null : x.dl_brate / 1e6)], ['Pujada', (x) => (x.ul_brate == null ? null : x.ul_brate / 1e6)]] },
+  { id: 'cqi', titol: 'Qualitat del canal (CQI)', unitat: '', min: 0, max: 15, dec: 0, series: [['CQI', (x) => (x.cqi == null || x.cqi < 0 ? null : x.cqi)]] },
+  { id: 'mcs', titol: 'Modulació (MCS)', unitat: '', min: 0, max: 28, dec: 0, series: [['Baixada', (x) => x.dl_mcs], ['Pujada', (x) => x.ul_mcs]] },
+  { id: 'ko', titol: 'Blocs repetits', unitat: '%', min: 0, dec: 1,
+    series: [['Baixada', (x) => pctKO(x.dl_nof_ok, x.dl_nof_nok)], ['Pujada', (x) => pctKO(x.ul_nof_ok, x.ul_nof_nok)]] },
+  { id: 'snr', titol: 'SNR de pujada', unitat: 'dB', dec: 1, series: [['SNR', (x) => x.pusch_snr_db]] },
+  { id: 'ri', titol: 'Capes MIMO (RI)', unitat: '', min: 0, dec: 1, series: [['Baixada', (x) => x.dl_ri], ['Pujada', (x) => x.ul_ri]] },
+  { id: 'rsrp', titol: 'RSRP de pujada (relatiu)', unitat: 'dB', dec: 1, series: [['RSRP', (x) => x.pusch_rsrp_db]] },
+];
+const SVGNS = 'http://www.w3.org/2000/svg';
+function sv(tag, attrs = {}, ...kids) {
+  const e = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs)) if (v != null) e.setAttribute(k, v);
+  for (const k of kids.flat()) if (k != null) e.append(k instanceof Node ? k : document.createTextNode(String(k)));
+  return e;
+}
+function arrodoneix(v) {
+  if (v <= 0) return 1;
+  const p = 10 ** Math.floor(Math.log10(v)), f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+}
+function fmtNum(v, dec) { return v == null || Number.isNaN(v) ? '—' : v.toFixed(dec); }
+function grafic(imsi, g, mostres, tmax) {
+  const W = 300, H = 92, ml = 34, mr = 6, mt = 8, mb = 18, pw = W - ml - mr, ph = H - mt - mb;
+  const vals = mostres.flatMap((x) => g.series.map(([, f]) => f(x))).filter((v) => v != null && !Number.isNaN(v));
+  let lo = g.min ?? (vals.length ? Math.min(...vals) : 0), hi = g.max ?? (vals.length ? Math.max(...vals) : 1);
+  if (g.max == null) hi = g.min === 0 ? arrodoneix(Math.max(hi, g.unitat === '%' ? 5 : 1)) : hi;
+  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  if (g.min == null) { const marge = (hi - lo) * 0.1; lo = Math.floor(lo - marge); hi = Math.ceil(hi + marge); }
+  const t0 = tmax - FINESTRA_S;
+  const X = (t) => ml + ((t - t0) / FINESTRA_S) * pw, Y = (v) => mt + ph - ((v - lo) / (hi - lo)) * ph;
+  const fills = [];
+  for (let i = 0; i <= 2; i++) {
+    const v = lo + ((hi - lo) * i) / 2, y = Y(v);
+    fills.push(sv('line', { x1: ml, x2: W - mr, y1: y, y2: y, class: 'graf-reixa' }),
+      sv('text', { x: ml - 4, y: y + 3, 'text-anchor': 'end', class: 'graf-eix' }, fmtNum(v, Math.abs(hi - lo) < 3 && g.dec ? 1 : 0)));
+  }
+  fills.push(sv('text', { x: ml, y: H - 4, class: 'graf-eix' }, '−5 min'), sv('text', { x: W - mr, y: H - 4, 'text-anchor': 'end', class: 'graf-eix' }, 'ara'));
+  g.series.forEach(([, f], si) => {
+    let d = '', prev = null;
+    for (const x of mostres) {
+      const v = f(x);
+      if (v == null || Number.isNaN(v)) { prev = null; continue; }
+      d += `${prev == null || x.t - prev > 5 ? 'M' : 'L'}${X(x.t).toFixed(1)},${Y(v).toFixed(1)}`;
+      prev = x.t;
+    }
+    if (d) fills.push(sv('path', { d, class: `graf-linia serie-${si}` }));
+  });
+  const marca = sv('g', { class: 'graf-marca' });
+  const zona = sv('rect', { x: ml, y: mt, width: pw, height: ph, class: 'graf-zona' });
+  const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `${g.titol}, últims 5 minuts` }, fills, marca, zona);
+  const tip = el('div', { class: 'graf-tip', hidden: true });
+  const clau = `${imsi}|${g.id}`;
+  const mostra = (t) => {
+    if (!mostres.length) return;
+    let x = mostres[0];
+    for (const m of mostres) if (Math.abs(m.t - t) < Math.abs(x.t - t)) x = m;
+    marca.replaceChildren(sv('line', { x1: X(x.t), x2: X(x.t), y1: mt, y2: mt + ph, class: 'graf-cursor' }),
+      g.series.map(([, f], si) => { const v = f(x); return v == null ? null : sv('circle', { cx: X(x.t), cy: Y(v), r: 4, class: `graf-punt serie-${si}` }); }));
+    tip.replaceChildren(el('b', {}, new Date(x.t * 1000).toLocaleTimeString()),
+      ...g.series.map(([nom, f], si) => el('div', {}, el('span', { class: `graf-mostra serie-${si}` }), ` ${nom}: ${fmtNum(f(x), g.dec)}${g.unitat ? ' ' + g.unitat : ''}`)));
+    tip.hidden = false;
+    tip.classList.toggle('esquerra', X(x.t) > W * 0.6);
+    HOVER = { clau, t: x.t };
+  };
+  zona.addEventListener('pointermove', (ev) => {
+    const r = svg.getBoundingClientRect();
+    const vx = ((ev.clientX - r.left) / r.width) * W;
+    mostra(t0 + ((vx - ml) / pw) * FINESTRA_S);
+  });
+  zona.addEventListener('pointerleave', () => { marca.replaceChildren(); tip.hidden = true; if (HOVER && HOVER.clau === clau) HOVER = null; });
+  if (HOVER && HOVER.clau === clau) mostra(HOVER.t);
+  const ultim = mostres.length ? mostres[mostres.length - 1] : null;
+  const llegenda = g.series.length > 1 ? el('span', { class: 'graf-llegenda' },
+    g.series.map(([nom], si) => el('span', {}, el('span', { class: `graf-mostra serie-${si}` }), ` ${nom}`))) : null;
+  const actual = ultim ? g.series.map(([, f]) => fmtNum(f(ultim), g.dec)).join(' / ') + (g.unitat ? ` ${g.unitat}` : '') : '—';
+  return el('figure', { class: 'graf' },
+    el('figcaption', {}, el('span', {}, g.titol, ' ', el('b', {}, actual)), llegenda),
+    el('div', { class: 'graf-cos' }, svg, tip));
+}
+function grafics(imsi) {
+  const h = HIST_RADIO[imsi];
+  if (!h || !h.size) return null;
+  const mostres = [...h.values()].sort((a, b) => a.t - b.t);
+  const tmax = mostres[mostres.length - 1].t;
+  const usats = GRAFS.filter((g) => mostres.some((x) => g.series.some(([, f]) => f(x) != null)));
+  return el('details', { class: 'grafs-radio', open: !GRAF_TANCATS.has(imsi),
+    ontoggle: (ev) => (ev.target.open ? GRAF_TANCATS.delete(imsi) : GRAF_TANCATS.add(imsi)) },
+  el('summary', {}, `Gràfics dels últims 5 minuts (${mostres.length} mostres, una per segon)`),
+  el('div', { class: 'grafs' }, usats.map((g) => grafic(imsi, g, mostres, tmax))));
+}
 function omplirRadio(box) {
   const t = $('#ue-desti').value, r = RADIO_UE[t];
   const imsi = box.dataset.imsi, estat = box.dataset.estat;
   const m = r && imsi ? r.per_imsi[imsi] : null;
-  if (m) { box.replaceChildren(...blocRadio(m)); return; }
+  if (m) { box.replaceChildren(...blocRadio(m), grafics(imsi) || ''); return; }
   if (estat !== 'connectat') { box.replaceChildren(); return; }   // en repòs o desregistrat: el gNB no el té
   const txt = !r ? 'Carregant les mètriques de ràdio…'
     : `Sense mètriques del gNB per a aquest mòbil${Object.values(r.fonts || {}).some((x) => x !== 'ok') ? ` (${Object.entries(r.fonts).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}: ${v}`).join('; ')})` : ''}.`;
@@ -758,6 +869,7 @@ async function carregaRadioUE(t) {
     const r = await api('GET', `/api/ues/${t}/radio`);
     if (seq !== SEQ_RADIO || t !== $('#ue-desti').value) return;
     RADIO_UE[t] = r;
+    for (const [imsi, m] of Object.entries(r.per_imsi || {})) acumulaHist(imsi, m);
   } catch (e) {
     if (seq !== SEQ_RADIO) return;
     RADIO_UE[t] = { per_imsi: {}, sense_mobil: [], fonts: { 'ràdio': e.message } };
