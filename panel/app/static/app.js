@@ -673,12 +673,12 @@ async function carregaUEs() {
   const t = $('#ue-desti').value;
   const box = $('#ue-taula');
   if (!t) { box.replaceChildren(el('p', { class: 'error' }, 'Cap equip amb AMF accessible.')); return; }
-  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF, logs i captura…'));
+  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF i l\'SMF…'));
   try {
     const d = await api('GET', `/api/ues/${t}`);
     const f = d.fonts || {};
-    $('#ue-fonts').textContent = `Fonts: estat en viu AMF/SMF ${f.estat_viu || '—'}, log AMF ${f.amf}, log SMF ${f.smf}, captura N2 ${f.captura}. Actualitzat ${new Date().toLocaleTimeString()}.`;
-    if (!d.dispositius.length) { box.replaceChildren(el('p', { class: 'nota' }, 'Cap dispositiu vist des que va arrencar l\'AMF.')); return; }
+    $('#ue-fonts').textContent = `Font: estat en viu de l'AMF i l'SMF (${f.estat_viu || '—'}). Actualitzat ${new Date().toLocaleTimeString()}.`;
+    if (!d.dispositius.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap dispositiu ara mateix.')); return; }
     const n = (e) => d.dispositius.filter((u) => u.estat === e).length;
     box.replaceChildren(
       el('p', { class: 'resum' }, `${d.dispositius.length} dispositius · `, el('span', { class: 'ok' }, `${n('connectat') + n('inactiu')} connectats`),
@@ -754,13 +754,13 @@ async function carregaGnbs() {
   const t = $('#gnb-desti').value;
   const box = $('#gnb-llista');
   if (!t) { box.replaceChildren(el('p', { class: 'error' }, 'Cap equip amb AMF accessible.')); return; }
-  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF, logs i captura…'));
+  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF i l\'SMF…'));
   try {
     const d = await api('GET', `/api/gnbs/${t}`);
     const f = d.fonts || {};
-    $('#gnb-fonts').textContent = `Fonts: estat en viu AMF ${f.estat_viu || '—'}, log AMF ${f.amf}, captura N2 ${f.captura_gnb || f.captura}. ` +
+    $('#gnb-fonts').textContent = `Font: estat en viu de l'AMF (${f.estat_viu || '—'}). ` +
       (d.n_gnbs_amf != null ? `L'AMF diu que té ${d.n_gnbs_amf} gNB. ` : '') + `Actualitzat ${new Date().toLocaleTimeString()}.`;
-    if (!d.gnbs.length) { box.replaceChildren(el('p', { class: 'nota' }, 'Cap gNB vist encara.')); return; }
+    if (!d.gnbs.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap gNB connectat ara mateix.')); return; }
     const n = d.gnbs.filter((g) => g.connectat || g.connectat_probable).length;
     box.replaceChildren(el('p', { class: 'resum' }, `${d.gnbs.length} gNB · `, el('span', { class: 'ok' }, `${n} connectats`)),
       el('div', { class: 'graella ues' }, d.gnbs.map(fitxaGnb)));

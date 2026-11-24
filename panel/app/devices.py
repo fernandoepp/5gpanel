@@ -349,6 +349,7 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
             if not k:
                 continue
             d = dev(k)
+            d.seen(viu.get('ts'))
             al_amf.add(k)
             if u.get('suci'):
                 d['suci'] = u['suci']
@@ -501,10 +502,10 @@ def diagnostics(d):
     dsp = d['dispositiu']
     if not (dsp.get('imeisv') or dsp.get('imei') or dsp.get('masked_imeisv')):
         av.append({'nivell': 'info', 'text':
-                   'IMEISV encara desconegut: apareix quan el mòbil fa un registre complet '
-                   '(Security Mode) dins la finestra de captura; després queda desat.'})
+                   'IMEISV encara desconegut: l\'AMF el rep quan el mòbil completa el registre '
+                   '(Security Mode Complete).'})
     if dsp.get('tac') and not dsp.get('model'):
         av.append({'nivell': 'info', 'text':
                    f'Model desconegut: el TAC {dsp["tac"]} no és a la base de dades de TAC; afegeix-lo a config/tac.csv (tac,marca,model). '
-                   'També surt sol amb el User-Agent d\'una petició HTTP sense TLS o del REGISTER SIP d\'IMS.'})
+                   ''})
     return av

@@ -718,49 +718,21 @@ async def _safe(coro, default):
 
 
 async def _core_data(t, user, gnbs=False):
-    """Logs de l'AMF/SMF i captura d'un equip amb AMF -> (health, devs, extra, fonts)."""
+    """Estat en viu de l'AMF i l'SMF (agent /estat5g, API JSON d'Open5GS) -> (health, devs, extra, fonts).
+    Els dispositius i els gNB surten NOMÉS d'aquí: ni logs ni captura (tshark)."""
     health = await agent(t, 'GET', '/health', user)
-    conts = health.get('containers', [])
-    if 'amf' not in conts:
+    if 'amf' not in health.get('containers', []):
         raise HTTPException(404, 'aquest equip no té AMF')
-    n = 2000
-
-    async def logs_of(c):
-        if c not in conts:
-            return ''
-        return (await agent(t, 'GET', '/logs', user, params={'container': c, 'tail': n}))['log']
-
-    async def capture(path):
-        if not health.get('ue_capture'):
-            return {}
-        return await agent(t, 'GET', path, user, timeout=90.0)
-
-    async def estat():
-        if not health.get('estat5g'):
-            return {}
-        return await agent(t, 'GET', '/estat5g', user, timeout=30.0)
-
-    tasks = [_safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''), _safe(capture('/ues'), {}),
-             _safe(estat(), {})]
-    if gnbs:
-        tasks.append(_safe(capture('/gnbs'), {}))
-    res = await asyncio.gather(*tasks)
-    (amf, e1), (smf, e2), (cap, e3), (viu, e5) = res[:4]
-    devs = build_devices(amf, smf, cap.get('ues', []), TAC, load_noms(),
-                         user_agents=cap.get('user_agents', []), models=MODELS, viu=viu)
-    fonts = {'amf': e1 or 'ok', 'smf': e2 or 'ok',
-             'captura': e3 or ('ok' if health.get('ue_capture') else 'no configurada')}
-    errs = (viu or {}).get('errors') or {}
+    fonts = {}
+    viu = {}
     if not health.get('estat5g'):
         fonts['estat_viu'] = 'agent sense /estat5g (actualitza l\'agent)'
     else:
-        fonts['estat_viu'] = e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok')
-    extra = {'amf_log': amf, 'viu': viu}
-    if gnbs:
-        g, e4 = res[4]
-        extra['gnbs'] = g.get('gnbs', [])
-        if e4:
-            fonts['captura_gnb'] = e4
+        viu, err = await _safe(agent(t, 'GET', '/estat5g', user, timeout=30.0), {})
+        errs = (viu or {}).get('errors') or {}
+        fonts['estat_viu'] = err or ('; '.join(sorted(set(errs.values()))) if errs else 'ok')
+    devs = build_devices('', '', None, TAC, load_noms(), models=MODELS, viu=viu)
+    extra = {'amf_log': '', 'viu': viu, 'gnbs': None}
     return health, devs, extra, fonts
 
 
