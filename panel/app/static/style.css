@@ -154,11 +154,24 @@ dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; ma
 dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .ue-sessions table td { border-bottom: none; padding: 2px 6px 2px 0; }
 .ue-sessions p { margin: 4px 0 0; font-size: 13px; }
-.ue-radio:empty { display: none; }
+/* Fitxes de mida fixa: el que no hi cap es desplaça dins la fitxa */
+.graella.ues .card.ue { height: 600px; overflow-y: auto; overscroll-behavior: contain; }
+.ue-radio { height: 104px; overflow: hidden; }
+.radio-cap { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.radio-cap h3 { margin: 0 !important; }
+button.petit { padding: 2px 10px; font-size: 12.5px; }
 .ue-radio .xips { margin-bottom: 6px; }
 .ue-radio .xip b { font-variant-numeric: tabular-nums; }
 .ue-radio p.nota { margin: 4px 0 0; font-size: 12px; }
-.grafs-radio { margin-top: 8px; }
+dialog.dlg-grafs { width: min(1100px, 94vw); max-height: 90vh; padding: 0; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--card-solid); color: var(--fg); }
+dialog.dlg-grafs::backdrop { background: rgba(0, 0, 0, .45); }
+.dlg-cap { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.dlg-cap h2 { margin: 0; font-size: 17px; }
+.dlg-cos { padding: 12px 18px 18px; overflow-y: auto; max-height: calc(90vh - 60px); }
+.dlg-ara { margin-bottom: 8px; }
+.dlg-ara dl.kv { margin-top: 6px; }
+.dlg-cos .grafs { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .grafs { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 8px; }
 .graf { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
 .graf figcaption { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); margin-bottom: 2px; }

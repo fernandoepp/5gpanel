@@ -666,7 +666,7 @@ function fitxaUE(u) {
       el('li', { class: NIVELLS[e.nivell] || '' }, el('time', {}, horaCurta(e.ts)), ' ', e.text,
         e.n > 1 ? el('span', { class: 'nota' }, ` ×${e.n} (fins ${horaCurta(e.fins)})`) : null))));
 
-  const radio = el('div', { class: 'ue-radio', 'data-imsi': u.imsi || '', 'data-estat': u.estat || '' });
+  const radio = el('div', { class: 'ue-radio', 'data-imsi': u.imsi || '', 'data-estat': u.estat || '', 'data-titol': titol });
   omplirRadio(radio);
   return el('article', { class: `card ue estat-${cls}` }, cap,
     el('div', { class: 'ue-cols' }, el('div', {}, el('h3', {}, 'Identitat'), ident), el('div', {}, el('h3', {}, 'Xarxa'), xarxa)),
@@ -716,6 +716,10 @@ function blocRadio(m) {
     ['CQI', m.cqi == null || m.cqi < 0 ? '—' : `${m.cqi}/15`, cqiCls, 'Qualitat del canal que informa el mòbil (0–15). Com més alt, millor canal i més velocitat possible. Per sota de 6 el canal és dolent.'],
     ['↓', mbps(m.dl_brate), '', 'Velocitat de baixada (gNB → mòbil) lliurada correctament en l\'últim segon'],
     ['↑', mbps(m.ul_brate), '', 'Velocitat de pujada (mòbil → gNB) rebuda correctament en l\'últim segon'],
+    ['SNR ↑', m.pusch_snr_db != null ? `${m.pusch_snr_db.toFixed(1)} dB` : '—', '', 'Relació senyal/soroll del que rep el gNB del mòbil. Per sobre de 20 dB és molt bona; per sota de 5 dB, dolenta.'],
+    ['MCS', `${m.dl_mcs ?? '—'}/${m.ul_mcs ?? '—'}`, '', 'Modulació de baixada / pujada (0–28). Més alt = més bits per símbol.'],
+    ['KO ↓', m.dl_nof_ok == null && m.dl_nof_nok == null ? '—' : `${(100 * (m.dl_nof_nok || 0) / Math.max(1, (m.dl_nof_ok || 0) + (m.dl_nof_nok || 0))).toFixed(1)} %`,
+      blerCls(m.dl_nof_ok, m.dl_nof_nok), 'Blocs de baixada que s\'han hagut de repetir en l\'últim segon. Per sobre del 10 % el canal va just.'],
   ];
   const fila = el('div', { class: 'xips' }, xips.map(([k, v, cl, tip]) => el('span', { class: `xip ${cl}`, title: tip }, el('b', {}, v), ' ', k)));
   const d = kv([
@@ -730,14 +734,21 @@ function blocRadio(m) {
   ]);
   const ass = m.associacio === 'deduida' ? 'deduït (és l\'únic mòbil connectat a aquest gNB)' : 'pel log del gNB';
   const peu = el('p', { class: 'nota' }, `RNTI ${m.rnti} · ${m.radio} · associat ${ass} · fa ${m.edat_s ?? '?'} s`);
-  return [el('h3', { title: 'Del planificador del gNB (ocudu), cada segon. No hi ha RSRP/RSSI de baixada per mòbil: el gNB no el mesura.' }, 'Ràdio'), fila, d, peu];
+  return { fila, detall: d, peu };
+}
+const TIP_RADIO = 'Del planificador del gNB (ocudu), cada segon. No hi ha RSRP/RSSI de baixada per mòbil: el gNB no el mesura.';
+function capRadio(box) {
+  const imsi = box.dataset.imsi, h = HIST_RADIO[imsi];
+  const b = el('button', { type: 'button', class: 'petit', disabled: !(h && h.size),
+    title: h && h.size ? 'Gràfics dels últims 5 minuts' : 'Encara no hi ha cap mostra de ràdio d\'aquest mòbil',
+    onclick: () => obreGrafics(imsi, box.dataset.titol) }, 'Gràfics');
+  return el('div', { class: 'radio-cap' }, el('h3', { title: TIP_RADIO }, 'Ràdio'), b);
 }
 
 // ---- gràfics: historial per IMSI acumulat al navegador (el gNB canvia el RNTI a cada connexió,
 // però aquí s'ajunta tot per mòbil). Finestra de 5 minuts; un forat de més de 5 s talla la línia.
 const HIST_RADIO = {};          // imsi -> Map(t -> mostra)
 const FINESTRA_S = 300;
-const GRAF_TANCATS = new Set(); // imsi amb els gràfics plegats
 let HOVER = null;               // {clau, t}: es manté en refrescar cada 3 s
 function acumulaHist(imsi, m) {
   const camps = m.hist_camps || [];
@@ -838,20 +849,44 @@ function grafics(imsi) {
   const mostres = [...h.values()].sort((a, b) => a.t - b.t);
   const tmax = mostres[mostres.length - 1].t;
   const usats = GRAFS.filter((g) => mostres.some((x) => g.series.some(([, f]) => f(x) != null)));
-  return el('details', { class: 'grafs-radio', open: !GRAF_TANCATS.has(imsi),
-    ontoggle: (ev) => (ev.target.open ? GRAF_TANCATS.delete(imsi) : GRAF_TANCATS.add(imsi)) },
-  el('summary', {}, `Gràfics dels últims 5 minuts (${mostres.length} mostres, una per segon)`),
-  el('div', { class: 'grafs' }, usats.map((g) => grafic(imsi, g, mostres, tmax))));
+  return [el('p', { class: 'nota' }, `Últims 5 minuts · ${mostres.length} mostres (una per segon) · els forats són estones sense connexió de ràdio (repòs).`),
+    el('div', { class: 'grafs' }, usats.map((g) => grafic(imsi, g, mostres, tmax)))];
+}
+// Finestra dels gràfics: una sola, es refresca amb les dades noves mentre és oberta.
+let DLG = null, DLG_IMSI = null, DLG_TITOL = '';
+function obreGrafics(imsi, titol) {
+  if (!DLG) {
+    DLG = el('dialog', { class: 'dlg-grafs', onclose: () => { DLG_IMSI = null; HOVER = null; } });
+    document.body.append(DLG);
+  }
+  DLG_IMSI = imsi; DLG_TITOL = titol || `IMSI ${imsi}`;
+  pintaDialeg();
+  if (!DLG.open) DLG.showModal();
+}
+function pintaDialeg() {
+  if (!DLG || !DLG_IMSI) return;
+  const r = RADIO_UE[$('#ue-desti').value], m = r ? r.per_imsi[DLG_IMSI] : null;
+  const cos = DLG.querySelector('.dlg-cos');
+  const scroll = cos ? cos.scrollTop : 0;
+  const nou = el('div', { class: 'dlg-cos' },
+    m ? el('div', { class: 'dlg-ara' }, blocRadio(m).fila, blocRadio(m).detall, blocRadio(m).peu)
+      : el('p', { class: 'nota' }, 'Ara mateix no té connexió de ràdio (en repòs o desconnectat): es mostra el que s\'ha vist abans.'),
+    grafics(DLG_IMSI) || el('p', { class: 'nota' }, 'Encara no hi ha mostres.'));
+  DLG.replaceChildren(el('div', { class: 'dlg-cap' }, el('h2', {}, `Ràdio · ${DLG_TITOL}`),
+    el('button', { type: 'button', onclick: () => DLG.close(), 'aria-label': 'Tanca' }, 'Tanca')), nou);
+  nou.scrollTop = scroll;
 }
 function omplirRadio(box) {
   const t = $('#ue-desti').value, r = RADIO_UE[t];
   const imsi = box.dataset.imsi, estat = box.dataset.estat;
   const m = r && imsi ? r.per_imsi[imsi] : null;
-  if (m) { box.replaceChildren(...blocRadio(m), grafics(imsi) || ''); return; }
-  if (estat !== 'connectat') { box.replaceChildren(); return; }   // en repòs o desregistrat: el gNB no el té
-  const txt = !r ? 'Carregant les mètriques de ràdio…'
-    : `Sense mètriques del gNB per a aquest mòbil${Object.values(r.fonts || {}).some((x) => x !== 'ok') ? ` (${Object.entries(r.fonts).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}: ${v}`).join('; ')})` : ''}.`;
-  box.replaceChildren(el('h3', {}, 'Ràdio'), el('p', { class: 'nota' }, txt));
+  if (m) { const b = blocRadio(m); box.replaceChildren(capRadio(box), b.fila, b.peu); return; }
+  // Sempre el mateix espai: la fitxa no canvia de mida quan el mòbil entra o surt de repòs.
+  const txt = estat === 'inactiu' ? 'En repòs: el gNB no el té connectat ara mateix, no hi ha mètriques.'
+    : estat !== 'connectat' ? 'Sense connexió de ràdio.'
+      : !r ? 'Carregant les mètriques de ràdio…'
+        : `Sense mètriques del gNB per a aquest mòbil${Object.values(r.fonts || {}).some((x) => x !== 'ok') ? ` (${Object.entries(r.fonts).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}: ${v}`).join('; ')})` : ''}.`;
+  box.replaceChildren(capRadio(box), el('p', { class: 'nota' }, txt));
 }
 function pintaRadioSense() {
   const box = $('#ue-radio-sense'), r = RADIO_UE[$('#ue-desti').value];
@@ -875,6 +910,7 @@ async function carregaRadioUE(t) {
     RADIO_UE[t] = { per_imsi: {}, sense_mobil: [], fonts: { 'ràdio': e.message } };
   }
   document.querySelectorAll('#ue-taula .ue-radio').forEach(omplirRadio);
+  pintaDialeg();
   pintaRadioSense();
 }
 async function carregaUEs() {
