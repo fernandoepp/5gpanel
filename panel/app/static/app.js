@@ -612,7 +612,7 @@ function fitxaUE(u) {
     ['IMEISV', dsp.imeisv || dsp.imei || (dsp.masked_imeisv ? `${dsp.masked_imeisv.slice(0, 10)}····${dsp.masked_imeisv.slice(14)} (emmascarat)` : 'desconegut'),
       dsp.masked_imeisv && !dsp.imeisv ? 'Masked IMEISV de l\'NGAP: els dígits 11-14 no s\'envien, però el TAC (8 primers) sí' : ''],
     ['Model', dsp.model ? `${dsp.model}${dsp.model_font === 'User-Agent' ? ' (pel trànsit)' : ''}` : (dsp.tac ? `TAC ${dsp.tac} (afegeix-lo a tac.csv)` : null),
-      dsp.model_font === 'User-Agent' ? 'Tret del User-Agent HTTP o SIP (REGISTER d\'IMS) del mòbil; el nom comercial ve de config/models.csv' : (dsp.model_font === 'TAC' ? 'Del TAC de l\'IMEI via tac.csv' : '')],
+      dsp.model_font === 'User-Agent' ? 'Tret del User-Agent HTTP o SIP (REGISTER d\'IMS) del mòbil; el nom comercial ve de config/models.csv' : (dsp.model_font === 'TAC' ? `Del TAC ${dsp.tac} de l'IMEI${dsp.tac_font === 'tac.csv' ? ' (config/tac.csv)' : ' (base de dades MoazEb/tac-database)'}${dsp.model_detall ? ': ' + dsp.model_detall : ''}` : '')],
     ['Sistema', dsp.so],
     ['MAC', 'no en té', 'Un mòbil 5G no fa servir Ethernet/Wi-Fi cap al core: la sessió PDU és IP pura i no hi viatja cap MAC. Les MAC de les captures són del gNB i del core. L\'identificador de maquinari equivalent és l\'IMEI.'],
     ['5G-TMSI', u.tmsi ? `${u.tmsi} (${hexDec(u.tmsi)})` : null, u.tmsis && u.tmsis.length > 1 ? `Anteriors: ${u.tmsis.slice(0, -1).join(', ')}` : ''],

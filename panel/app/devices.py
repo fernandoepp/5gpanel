@@ -4,7 +4,7 @@ Ajunta tres fonts que el panell ja pot llegir a través de l'agent:
   * log de l'AMF  -> SUCI/SUPI, 5G-TMSI, cel·la, registres, service requests,
                      errors d'autenticació, paging, DNN rebutjats, slice de cada sessió
   * log de l'SMF  -> IP assignada a cada sessió PDU (i quan s'allibera)
-  * captura NGAP  -> IMEISV/IMEI (model via tac.csv) i algorisme de xifrat NAS
+  * captura NGAP  -> IMEISV/IMEI (model via tac.csv i la base de dades de TAC) i algorisme de xifrat NAS
   * User-Agent HTTP del pla d'usuari (ua_capture.py) -> model i SO, creuant la IP
                      del UE amb la IP que l'SMF li va donar en aquell moment
 
@@ -438,7 +438,13 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
         if ident:
             info['tac'] = ident[:8]
             info['emmascarat'] = not (info.get('imeisv') or info.get('imei'))
-            info['model'] = (tac_db or {}).get(ident[:8])
+            ti = tac_db.info(ident[:8]) if hasattr(tac_db, 'info') else None
+            if ti:
+                info['model'] = ti['model']
+                info['model_detall'] = ti['detall']
+                info['tac_font'] = ti['font']
+            else:
+                info['model'] = (tac_db or {}).get(ident[:8])
         if info.get('model_trafic'):
             codi = info['model_trafic']
             nom = (models or {}).get(codi.upper())
@@ -499,6 +505,6 @@ def diagnostics(d):
                    '(Security Mode) dins la finestra de captura; després queda desat.'})
     if dsp.get('tac') and not dsp.get('model'):
         av.append({'nivell': 'info', 'text':
-                   f'Model desconegut: afegeix el TAC {dsp["tac"]} a config/tac.csv (tac,marca,model). '
+                   f'Model desconegut: el TAC {dsp["tac"]} no és a la base de dades de TAC; afegeix-lo a config/tac.csv (tac,marca,model). '
                    'També surt sol amb el User-Agent d\'una petició HTTP sense TLS o del REGISTER SIP d\'IMS.'})
     return av

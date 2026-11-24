@@ -5,3 +5,5 @@ certs-5g/
 *.key
 *.secret
 panel/certs/
+panel/app/data/tac.sqlite
+panel/app/data/tac.tmp

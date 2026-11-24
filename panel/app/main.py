@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import DUMMY, RateLimiter, verify_password
 from .devices import build as build_devices
 from .gnbs import build as build_gnbs
+from .tacdb import TacDB
 from .radio import calcula as radio_calc
 from .validation import services_for, validate, validate_plmn, validate_tdd
 
@@ -644,7 +645,7 @@ def load_tac():
     return out
 
 
-TAC = load_tac()
+TAC = TacDB(load_tac())   # tac.csv del laboratori + base de dades pública de TAC
 
 
 def load_noms():

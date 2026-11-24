@@ -17,7 +17,7 @@ PANEL_DIR=${PANEL_DIR:-/opt/panel5g/panel}
 PANEL_IP=${PANEL_IP:-$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')}
 [[ -n $PANEL_IP ]] || { echo "No trobo la IP de la VM: defineix PANEL_IP"; exit 1; }
 [[ $EUID -eq 0 ]] || { echo "Cal executar-ho amb sudo"; exit 1; }
-for f in agent/agent5g.py agent/ua_capture.py agent/ua-capture.service \
+for f in agent/agent5g.py agent/ua_capture.py agent/ua-capture.service panel/Dockerfile panel/app/data/tac_full.csv.gz \
          panel/app/main.py panel/app/radio.py panel/app/static/app.js panel/config/schema.yaml; do
   [[ -f "$SRC/$f" ]] || { echo "Falta $SRC/$f"; exit 1; }
 done
@@ -39,6 +39,11 @@ OWN=$(stat -c %u:%g "$PANEL_DIR/app/main.py")
 install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC"/panel/app/*.py "$PANEL_DIR/app/"
 install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC"/panel/app/static/* "$PANEL_DIR/app/static/"
 install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/config/schema.yaml" "$PANEL_DIR/config/"
+# base de dades de TAC (model del mòbil) i el Dockerfile que la converteix a SQLite
+install -d -m 755 -o "${OWN%:*}" -g "${OWN#*:}" "$PANEL_DIR/app/data"
+install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC"/panel/app/data/tac_full.csv.gz "$SRC"/panel/app/data/LICENSE-tac-database "$SRC"/panel/app/data/tac_full.VERSIO "$PANEL_DIR/app/data/"
+cp -a "$PANEL_DIR/Dockerfile" "$BK/" 2>/dev/null || true
+install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/Dockerfile" "$PANEL_DIR/Dockerfile"
 # models.csv (codi -> nom comercial): només si encara no n'hi ha, per no trepitjar el teu
 if [[ -f "$SRC/panel/config/models.csv" && ! -f "$PANEL_DIR/config/models.csv" ]]; then
   install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/config/models.csv" "$PANEL_DIR/config/"
