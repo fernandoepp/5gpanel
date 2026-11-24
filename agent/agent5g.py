@@ -31,6 +31,7 @@ permès. Només sap fer operacions d'una llista blanca:
   GET  /ues                    -> UEs vistos a la captura NGAP (només si "ue_capture")
                                   i User-Agents HTTP per IP del UE (ua_capture.py)
   GET  /gnbs                   -> gNB que han fet NG Setup (captura NGAP + /var/lib/agent5g/gnbs.json)
+  GET  /estat5g                -> estat en viu de l'AMF i l'SMF (API JSON d'Open5GS: gNB, UEs, sessions PDU)
   GET  /audit?tail=N
 
 Només fa servir la biblioteca estàndard de Python (>= 3.8), per instal·lar-lo
@@ -50,6 +51,8 @@ import tempfile
 import threading
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qs, urlparse
 
 MAX_BODY = 64 * 1024
@@ -1888,6 +1891,147 @@ def gnb_list():
     return out
 
 
+# ---------------------------------------------------------------- estat en viu (API JSON d'Open5GS)
+# Des de la v2.7.7, el servidor de mètriques de l'AMF i de l'SMF (port 9091 a docker_open5gs)
+# també serveix /gnb-info i /ue-info (AMF) i /pdu-info (SMF) en JSON. És l'estat que l'AMF i
+# l'SMF tenen a memòria: no depèn de la captura ni de quantes línies de log queden.
+# Config opcional: "open5gs_api": {"amf": "http://IP:9091", "smf": "http://IP:9091", "port": 9091,
+# "timeout": 3}. Per defecte agafa AMF_IP i SMF_IP del .env.
+_O5GS = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # mai per un proxy
+
+
+def _o5gs_base(nf):
+    api = CFG.get('open5gs_api') or {}
+    if api.get(nf):
+        return api[nf].rstrip('/')
+    ip = read_env().get(f'{nf.upper()}_IP')
+    if not ip:
+        raise LookupError(f'{nf.upper()}_IP no és al .env')
+    return f'http://{ip}:{int(api.get("port", 9091))}'
+
+
+def _o5gs_items(nf, path):
+    """Totes les pàgines d'un dels JSON d'Open5GS (màxim 100 elements per pàgina)."""
+    base = _o5gs_base(nf)
+    timeout = float((CFG.get('open5gs_api') or {}).get('timeout', 3))
+    items = []
+    for page in range(50):
+        with _O5GS.open(f'{base}{path}?page={page}&page_size=100', timeout=timeout) as r:
+            d = json.loads(r.read().decode('utf-8', 'replace'))
+        items += d.get('items') or []
+        if not (d.get('pager') or {}).get('next'):
+            break
+    return items
+
+
+def _peer(txt):
+    """'[192.168.1.31]:38412' -> ('192.168.1.31', '38412')"""
+    m = re.match(r'^\[?([0-9a-fA-F.:]+?)\]?:(\d+)$', txt or '')
+    return (m.group(1), m.group(2)) if m else (txt or None, None)
+
+
+def _slices(lst):
+    out = []
+    for x in lst or []:
+        sl = {'sst': x.get('sst')}
+        if x.get('sd') and x['sd'].lower() != 'ffffff':
+            sl['sd'] = x['sd'].lower()
+        if sl not in out:
+            out.append(sl)
+    return out
+
+
+def _o5gs_gnb(g):
+    ip, port = _peer(((g.get('ng') or {}).get('sctp') or {}).get('peer'))
+    tacs, slices, plmns = [], [], []
+    for ta in g.get('supported_ta_list') or []:
+        try:
+            tac = str(int(ta.get('tac'), 16))
+        except (TypeError, ValueError):
+            tac = None
+        if tac and tac not in tacs:
+            tacs.append(tac)
+        for b in ta.get('bplmns') or []:
+            if b.get('plmn') and b['plmn'] not in plmns:
+                plmns.append(b['plmn'])
+            for sl in _slices(b.get('snssai')):
+                if sl not in slices:
+                    slices.append(sl)
+    return {'ip': ip, 'port': port, 'gnb_id': g.get('gnb_id'), 'nom': g.get('name') or None,
+            'plmn': g.get('plmn'), 'plmns': plmns, 'tacs': tacs, 'slices': slices,
+            'setup_ok': bool((g.get('ng') or {}).get('setup_success')),
+            'n_ues': g.get('num_connected_ues'), 'amf': (g.get('network') or {}).get('amf_name')}
+
+
+def _o5gs_ue(u):
+    supi = u.get('supi') or ''
+    pei = u.get('pei') or ''
+    loc = u.get('location') or {}
+    cgi = loc.get('nr_cgi') or {}
+    gnb = u.get('gnb') or {}
+    sec = u.get('security') or {}
+    nci = cgi.get('nci')
+    mt = u.get('m_tmsi')
+    return {
+        'imsi': supi[5:] if supi.startswith('imsi-') else None, 'suci': u.get('suci'),
+        'imeisv': pei[7:] if pei.startswith('imeisv-') else None,
+        'imei': pei[5:] if pei.startswith('imei-') else None,
+        'mm_state': u.get('mm_state'), 'cm_state': u.get('cm_state'), 'guti': u.get('guti'),
+        'tmsi': hex(mt) if isinstance(mt, int) else None,
+        'gnb_id': gnb.get('gnb_id', cgi.get('gnb_id')), 'cella': gnb.get('cell_id', cgi.get('cell_id')),
+        'cell_id': hex(nci) if isinstance(nci, int) else None,
+        'tac': str((loc.get('nr_tai') or {}).get('tac')) if (loc.get('nr_tai') or {}).get('tac') is not None else None,
+        'plmn': (loc.get('nr_tai') or {}).get('plmn'),
+        'ran_ue_ngap_id': gnb.get('ran_ue_ngap_id'), 'amf_ue_ngap_id': gnb.get('amf_ue_ngap_id'),
+        'xifrat': sec.get('enc'), 'integritat': sec.get('int'),
+        'slices': _slices(u.get('allowed_slices')), 'ambr': u.get('ambr'),
+    }
+
+
+def _o5gs_pdus(item):
+    supi = item.get('supi') or ''
+    imsi = supi[5:] if supi.startswith('imsi-') else None
+    out = []
+    for p in item.get('pdu') or []:
+        sn = p.get('snssai') or {}
+        n3 = p.get('n3') or {}
+        sd = (sn.get('sd') or '').lower()
+        out.append({'imsi': imsi, 'psi': p.get('psi'), 'dnn': p.get('dnn') or p.get('apn'),
+                    'ipv4': p.get('ipv4'), 'ipv6': p.get('ipv6'), 'sst': sn.get('sst'),
+                    'sd': sd if sd and sd != 'ffffff' else None, 'estat': p.get('pdu_state'),
+                    '5qi': [q.get('5qi', q.get('qci')) for q in p.get('qos_flows') or []],
+                    'upf': _peer((n3.get('upf') or {}).get('addr'))[0],
+                    'gnb_n3': _peer((n3.get('gnb') or {}).get('addr'))[0],
+                    'activitat_ue': item.get('ue_activity')})
+    return out
+
+
+def estat5g():
+    """gNB, UEs i sessions PDU tal com les tenen ara l'AMF i l'SMF. Cada part pot fallar sola."""
+    conts = CFG.get('containers', [])
+    if 'amf' not in conts:
+        raise LookupError
+    out = {'ts': now(), 'gnbs': None, 'ues': None, 'pdus': None, 'errors': {}}
+    parts = [('gnbs', 'amf', '/gnb-info', _o5gs_gnb), ('ues', 'amf', '/ue-info', _o5gs_ue)]
+    if 'smf' in conts:
+        parts.append(('pdus', 'smf', '/pdu-info', None))
+    for key, nf, path, conv in parts:
+        try:
+            items = _o5gs_items(nf, path)
+            if conv:
+                out[key] = [conv(x) for x in items if isinstance(x, dict)]
+            else:
+                out[key] = [p for x in items if isinstance(x, dict) for p in _o5gs_pdus(x)]
+        except LookupError as e:
+            out['errors'][key] = str(e) or 'no configurat'
+        except urllib.error.HTTPError as e:
+            out['errors'][key] = (f'{nf.upper()} sense {path}: Open5GS anterior a la v2.7.7?'
+                                  if e.code in (400, 404) else f'{nf.upper()} {path}: HTTP {e.code}')
+        except (OSError, ValueError) as e:
+            out['errors'][key] = f'{nf.upper()} {path}: {type(e).__name__}'
+    return out
+
+
 def ua_list():
     """User-Agents HTTP per IP del UE (els escriu ua_capture.py). Mai URLs ni contingut."""
     cap = CFG.get('ue_capture') or {}
@@ -1977,6 +2121,7 @@ class Handler(BaseHTTPRequestHandler):
                                      'log_files': sorted(CFG['log_files']),
                                      'project_actions': CFG['project_actions'],
                                      'ue_capture': bool(CFG.get('ue_capture')),
+                                     'estat5g': 'amf' in CFG['containers'],
                                      'nom': CFG.get('name'), 'voip': bool(voip_cfg()['permes'])})
             elif url.path == '/env':
                 self.send_json(200, {'env': public_env()})
@@ -2021,6 +2166,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, {'gnbs': gnb_list()})
                 except LookupError:
                     self.send_json(404, {'error': 'captura no configurada'})
+            elif url.path == '/estat5g':
+                try:
+                    self.send_json(200, estat5g())
+                except LookupError:
+                    self.send_json(404, {'error': 'aquest equip no té AMF'})
             elif url.path == '/ues':
                 try:
                     self.send_json(200, {'ues': ue_list(), 'user_agents': ua_list()})

@@ -699,18 +699,29 @@ async def _core_data(t, user, gnbs=False):
             return {}
         return await agent(t, 'GET', path, user, timeout=90.0)
 
-    tasks = [_safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''), _safe(capture('/ues'), {})]
+    async def estat():
+        if not health.get('estat5g'):
+            return {}
+        return await agent(t, 'GET', '/estat5g', user, timeout=30.0)
+
+    tasks = [_safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''), _safe(capture('/ues'), {}),
+             _safe(estat(), {})]
     if gnbs:
         tasks.append(_safe(capture('/gnbs'), {}))
     res = await asyncio.gather(*tasks)
-    (amf, e1), (smf, e2), (cap, e3) = res[:3]
+    (amf, e1), (smf, e2), (cap, e3), (viu, e5) = res[:4]
     devs = build_devices(amf, smf, cap.get('ues', []), TAC, load_noms(),
-                         user_agents=cap.get('user_agents', []), models=MODELS)
+                         user_agents=cap.get('user_agents', []), models=MODELS, viu=viu)
     fonts = {'amf': e1 or 'ok', 'smf': e2 or 'ok',
              'captura': e3 or ('ok' if health.get('ue_capture') else 'no configurada')}
-    extra = {'amf_log': amf}
+    errs = (viu or {}).get('errors') or {}
+    if not health.get('estat5g'):
+        fonts['estat_viu'] = 'agent sense /estat5g (actualitza l\'agent)'
+    else:
+        fonts['estat_viu'] = e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok')
+    extra = {'amf_log': amf, 'viu': viu}
     if gnbs:
-        g, e4 = res[3]
+        g, e4 = res[4]
         extra['gnbs'] = g.get('gnbs', [])
         if e4:
             fonts['captura_gnb'] = e4
@@ -739,7 +750,8 @@ async def _radio_info(t, user):
 async def gnbs(t: str, s=Depends(current_user)):
     _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True)
     radios = [r for r in await asyncio.gather(*(_radio_info(o, s['user']) for o in targets() if o != t)) if r]
-    res = build_gnbs(extra['amf_log'], extra.get('gnbs'), devs, radios)
+    res = build_gnbs(extra['amf_log'], extra.get('gnbs'), devs, radios,
+                     viu=(extra.get('viu') or {}).get('gnbs'))
     if s['rol'] != 'admin':                       # el lector no veu IMSI
         for g in res['gnbs']:
             g['ues'] = [{k: v for k, v in u.items() if k not in ('imsi', 'nom')} for u in g['ues']]

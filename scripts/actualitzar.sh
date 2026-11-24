@@ -13,7 +13,9 @@
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
 PANEL_DIR=${PANEL_DIR:-/opt/panel5g/panel}
-PANEL_IP=${PANEL_IP:-192.168.2.99}
+# IP de la VM per on surt el trànsit (el DHCP la pot canviar): es pot forçar amb PANEL_IP=...
+PANEL_IP=${PANEL_IP:-$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')}
+[[ -n $PANEL_IP ]] || { echo "No trobo la IP de la VM: defineix PANEL_IP"; exit 1; }
 [[ $EUID -eq 0 ]] || { echo "Cal executar-ho amb sudo"; exit 1; }
 for f in agent/agent5g.py agent/ua_capture.py agent/ua-capture.service \
          panel/app/main.py panel/app/radio.py panel/app/static/app.js panel/config/schema.yaml; do

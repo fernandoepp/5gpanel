@@ -46,6 +46,14 @@ Importante: `docker restart` no relee el `.env`. Por eso el panel siempre **recr
 - Los patrones de `estat_logs` en `panel.yaml` son heurísticas y hay que contrastarlos con los logs reales.
 - La métrica JSON del gNB (`metrics.enable_json`) todavía no se aprovecha.
 
+## Estado en vivo del AMF y del SMF (core)
+
+Desde Open5GS v2.7.7, el servidor de métricas del AMF y del SMF (puerto 9091 en docker_open5gs) sirve también `/gnb-info`, `/ue-info` (AMF) y `/pdu-info` (SMF) en JSON. El agente los lee en `GET /estat5g` y el panel los usa como **fuente principal** en las pestañas de UEs y gNodeB: qué gNB hay conectados, qué móviles están registrados o en reposo, en qué gNB y celda están, su IMEISV, el cifrado, y las sesiones PDU con IP, slice, estado (activa / en reposo) y UPF.
+
+- Es el estado que el AMF y el SMF tienen en memoria: no depende de la captura NGAP ni de cuántas líneas de log quedan. Los logs siguen dando el historial (eventos, contadores, causas de rechazo) y la captura, lo que Open5GS no guarda (NG Setup rechazados, IMEISV de móviles rechazados).
+- Por defecto usa `AMF_IP` y `SMF_IP` del `.env` y el puerto 9091. Se puede cambiar en `/etc/agent5g/agent5g.json`: `"open5gs_api": {"amf": "http://IP:9091", "smf": "http://IP:9091", "timeout": 3}`.
+- Si Open5GS es anterior a v2.7.7 (responde 400/404), el panel lo indica en la línea «Fonts» y sigue con logs y captura. Comprobación rápida desde el core: `curl -s http://172.22.0.10:9091/ue-info`.
+
 ## Modelo del móvil por el tráfico (opcional, core)
 
 `agent/ua_capture.py` + `ua-capture.service` escuchan N3 (GTP-U, UDP 2152) con `tshark` y guardan **solo** IP del UE + `User-Agent` HTTP + hora en `/var/lib/agent5g/ua.json` (máx. 300 entradas; nada de URLs, hosts ni contenido, nada de pcap a disco). El panel cruza la IP con la que el SMF dio a cada IMSI en ese momento y pone en la ficha el modelo (p. ej. `SM-S911B`) y el sistema (`Android 14`).
@@ -67,6 +75,7 @@ En *Paràmetres > Ràdio* hay un campo «Freqüència central (MHz)» que no se 
 ## Pestaña gNodeB
 
 Una card por cada gNB que se conecta al AMF:
+- **Estado en vivo del AMF (`/gnb-info`):** qué gNB están conectados ahora, con gNB-ID, nombre, PLMN, TAC y slices. Manda sobre el log y la captura.
 - **Log del AMF:** conexiones y cortes SCTP (N2), y avisos de NG Setup como «Cannot find Served TAI».
 - **Captura N2 (`GET /gnbs` del agente):** NG Setup Request/Response/Failure. De ahí salen gNB-ID, nombre, PLMN, TAC, slices, Paging DRX, el AMF que lo acepta y la causa si lo rechaza. Se guarda en `/var/lib/agent5g/gnbs.json`, así que sigue apareciendo aunque el anillo de captura ya no lo tenga.
 - **UEs:** las fichas de UEs que cuelgan de cada gNB, deducidas de su CellID (gNB-ID + celda).

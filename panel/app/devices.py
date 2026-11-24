@@ -145,7 +145,8 @@ class Dev(dict):
         super().__init__(
             imsi=None, suci=None, suci_info=None, estat='desconegut', connectat=False,
             registrat=False, tmsi=None, amf_id=None, tmsis=[], tac=None, cell_id=None,
-            ran_ue_ngap_id=None, amf_ue_ngap_id=None, primer=None, darrer=None,
+            ran_ue_ngap_id=None, amf_ue_ngap_id=None, gnb_id=None, cella=None, estat_amf=None,
+            primer=None, darrer=None,
             ultim_registre=None, sessions={}, historial_ip=[], dnn_rebutjats={},
             comptadors={'registres': 0, 'service_requests': 0, 'auth_fallides': 0,
                         'paging_fallit': 0, 'alliberaments': 0, 'desregistres': 0, 'rebuigs': 0},
@@ -166,7 +167,8 @@ class Dev(dict):
         ev.append({'ts': ts, 'nivell': nivell, 'text': text})
 
 
-def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents=None, models=None):
+def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents=None, models=None,
+          viu=None):
     devs = {}            # clau: imsi o suci
     suci2imsi = {}
     tmsi2key = {}
@@ -336,6 +338,60 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
             d = devs.get(imsi)
             if d and dnn in d['sessions'] and d['sessions'][dnn].get('ipv4') == ip4:
                 d['sessions'][dnn]['activa'] = False
+
+    # ---- estat en viu de l'AMF i l'SMF (agent /estat5g, API JSON d'Open5GS). És el que
+    # tenen ara a memòria, així que mana sobre el que s'ha deduït dels logs (que es perden).
+    viu = viu or {}
+    if viu.get('ues') is not None:
+        al_amf = set()
+        for u in viu['ues']:
+            k = u.get('imsi') or u.get('suci')
+            if not k:
+                continue
+            d = dev(k)
+            al_amf.add(k)
+            if u.get('suci'):
+                d['suci'] = u['suci']
+                d['suci_info'] = d['suci_info'] or suci_info(u['suci'])
+            mm, cm = u.get('mm_state'), u.get('cm_state')
+            d['estat_amf'] = mm
+            d['registrat'] = mm == 'registered' if mm else True
+            d['connectat'] = cm == 'connected'
+            for f in ('tac', 'cell_id', 'gnb_id', 'cella', 'ran_ue_ngap_id', 'amf_ue_ngap_id'):
+                if u.get(f) is not None:
+                    d[f] = str(u[f]) if f in ('ran_ue_ngap_id', 'amf_ue_ngap_id') else u[f]
+            if u.get('tmsi'):
+                d['tmsi'] = u['tmsi']
+                if u['tmsi'] not in d['tmsis']:
+                    d['tmsis'].append(u['tmsi'])
+                tmsi2key[u['tmsi']] = k
+            info = d['dispositiu']
+            for f in ('imeisv', 'imei'):
+                if u.get(f):
+                    info[f] = u[f]
+            if u.get('xifrat'):
+                info['ea'] = u['xifrat'].upper()
+                info['nas_xifrat'] = u['xifrat'].lower() != 'nea0'
+            if u.get('slices'):
+                d['slices'] = u['slices']
+        for k, d in devs.items():
+            if k not in al_amf:                 # l'AMF ja no en té context
+                d['registrat'] = d['connectat'] = False
+    if viu.get('pdus') is not None:
+        for d in devs.values():
+            for s in d['sessions'].values():
+                s['activa'] = False
+        for p in viu['pdus']:
+            if not p.get('imsi') or not p.get('dnn'):
+                continue
+            d = dev(p['imsi'])
+            s = d['sessions'].setdefault(p['dnn'], {'dnn': p['dnn']})
+            s.update(ipv4=p.get('ipv4'), ipv6=p.get('ipv6'), sst=p.get('sst'), sd=p.get('sd'),
+                     psi=p.get('psi'), activa=True, en_repos=p.get('estat') == 'inactive',
+                     upf=p.get('upf'), fiveqi=p.get('5qi'))
+            ip4 = p.get('ipv4')
+            if ip4 and (not d['historial_ip'] or d['historial_ip'][-1]['ip'] != ip4):
+                d['historial_ip'].append({'ip': ip4, 'dnn': p['dnn'], 'ts': d['darrer']})
 
     # ---- captura NGAP (agent): IMEISV i xifrat
     for c in capture or []:
