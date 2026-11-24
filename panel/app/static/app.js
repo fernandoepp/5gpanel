@@ -11,7 +11,7 @@ function mostraError(txt) {
 window.addEventListener('error', (e) => mostraError(`${e.message} @ ${(e.filename || '').split('/').pop()}:${e.lineno}:${e.colno}`));
 window.addEventListener('unhandledrejection', (e) => mostraError(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)));
 let ME = null;
-let timerEstat = null, timerLogs = null, timerUE = null, timerGnb = null, timerVoip = null;
+let timerEstat = null, timerLogs = null, timerUE = null, timerGnb = null, timerVoip = null, timerRadio = null;
 
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
@@ -41,7 +41,7 @@ async function api(method, url, body) {
 // ------------------------------------------------------------ sessió
 function mostraLogin() {
   ME = null;
-  clearInterval(timerEstat); clearInterval(timerLogs); clearInterval(timerUE); clearInterval(timerGnb);
+  clearInterval(timerEstat); clearInterval(timerLogs); clearInterval(timerUE); clearInterval(timerGnb); clearInterval(timerRadio);
   document.querySelectorAll('.tab').forEach((t) => (t.hidden = true));
   $('#lateral').hidden = true; document.body.classList.remove('amb-lateral'); $('#login').hidden = false;
 }
@@ -108,7 +108,7 @@ $('#sortir').addEventListener('click', async () => { await api('POST', '/api/log
 function tab(nom) {
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('actiu', b.dataset.tab === nom));
   document.querySelectorAll('.tab').forEach((t) => (t.hidden = t.id !== `tab-${nom}`));
-  clearInterval(timerEstat); clearInterval(timerLogs); clearInterval(timerUE); clearInterval(timerGnb);
+  clearInterval(timerEstat); clearInterval(timerLogs); clearInterval(timerUE); clearInterval(timerGnb); clearInterval(timerRadio);
   clearInterval(timerVoip); timerVoip = null;
   if (nom !== 'estat') refrescaEquips();
   if (nom === 'estat') { carregaEstat(); timerEstat = setInterval(carregaEstat, 5000); }
@@ -117,7 +117,11 @@ function tab(nom) {
   if (nom === 'historial') carregaHistorial();
   if (nom === 'gnbs') { carregaGnbs(); timerGnb = setInterval(() => $('#gnb-auto').checked && carregaGnbs(), 10000); }
   if (nom === 'subs') carregaSubs();
-  if (nom === 'ues') { carregaUEs(); timerUE = setInterval(() => $('#ue-auto').checked && carregaUEs(), 10000); }
+  if (nom === 'ues') {
+    carregaUEs(); timerUE = setInterval(() => $('#ue-auto').checked && carregaUEs(), 10000);
+    // les mètriques de ràdio canvien cada segon: es refresquen soles, sense tornar a demanar les fitxes
+    timerRadio = setInterval(() => $('#ue-auto').checked && !document.hidden && carregaRadioUE($('#ue-desti').value), 3000);
+  }
 }
 document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => tab(b.dataset.tab)));
 
@@ -662,9 +666,11 @@ function fitxaUE(u) {
       el('li', { class: NIVELLS[e.nivell] || '' }, el('time', {}, horaCurta(e.ts)), ' ', e.text,
         e.n > 1 ? el('span', { class: 'nota' }, ` ×${e.n} (fins ${horaCurta(e.fins)})`) : null))));
 
+  const radio = el('div', { class: 'ue-radio', 'data-imsi': u.imsi || '', 'data-estat': u.estat || '' });
+  omplirRadio(radio);
   return el('article', { class: `card ue estat-${cls}` }, cap,
     el('div', { class: 'ue-cols' }, el('div', {}, el('h3', {}, 'Identitat'), ident), el('div', {}, el('h3', {}, 'Xarxa'), xarxa)),
-    sess, ips, comptes, avisos, uas, act);
+    radio, sess, ips, comptes, avisos, uas, act);
 }
 
 const OBERTS = new Set();   // fitxes amb l'activitat desplegada (es manté en refrescar)
@@ -685,7 +691,79 @@ function pintaUEs(box, d, t, carregant) {
     el('p', { class: 'resum' }, `${d.dispositius.length} dispositius · `, el('span', { class: 'ok' }, `${n('connectat') + n('inactiu')} connectats`),
       n('inactiu') ? ` (${n('inactiu')} en repòs)` : '', ' · ', `${n('desregistrat')} desregistrats`,
       carregant ? el('span', { class: 'nota' }, ' · carregant l\'historial…') : null),
+    el('div', { id: 'ue-radio-sense' }),
     el('div', { class: 'graella ues' }, d.dispositius.map(fitxaUE)));
+  pintaRadioSense();
+}
+
+// ------------------------------------------------------------ mètriques de ràdio per mòbil
+// Venen del gNB (ocudu) cada segon. Es demanen a part, després de pintar les fitxes: si la ràdio
+// no respon, les fitxes del core surten igualment i aquí només es diu per què no hi ha dades.
+const RADIO_UE = {};   // per equip core: última resposta de /api/ues/{t}/radio
+let SEQ_RADIO = 0;
+function mbps(b) { return b == null ? '—' : b >= 1e6 ? `${(b / 1e6).toFixed(1)} Mbit/s` : `${Math.round(b / 1e3)} kbit/s`; }
+function rebutjats(ok, ko) {
+  if (ok == null && ko == null) return '—';
+  const tot = (ok || 0) + (ko || 0);
+  return tot ? `${ko || 0} de ${tot} (${(100 * (ko || 0) / tot).toFixed(1)} %)` : 'cap bloc';
+}
+function riTxt(v) { return v == null ? '—' : Number.isInteger(v) ? String(v) : v.toFixed(1); }
+function blocRadio(m) {
+  const cqiCls = m.cqi == null || m.cqi < 0 ? '' : m.cqi >= 10 ? 'ok' : m.cqi >= 6 ? 'warn' : 'error';
+  const pct = (ok, ko) => ((ok || 0) + (ko || 0) ? (ko || 0) / ((ok || 0) + (ko || 0)) : 0);
+  const blerCls = (ok, ko) => (pct(ok, ko) > 0.1 ? 'error' : pct(ok, ko) > 0.02 ? 'warn' : '');
+  const xips = [
+    ['CQI', m.cqi == null || m.cqi < 0 ? '—' : `${m.cqi}/15`, cqiCls, 'Qualitat del canal que informa el mòbil (0–15). Com més alt, millor canal i més velocitat possible. Per sota de 6 el canal és dolent.'],
+    ['↓', mbps(m.dl_brate), '', 'Velocitat de baixada (gNB → mòbil) lliurada correctament en l\'últim segon'],
+    ['↑', mbps(m.ul_brate), '', 'Velocitat de pujada (mòbil → gNB) rebuda correctament en l\'últim segon'],
+  ];
+  const fila = el('div', { class: 'xips' }, xips.map(([k, v, cl, tip]) => el('span', { class: `xip ${cl}`, title: tip }, el('b', {}, v), ' ', k)));
+  const d = kv([
+    ['Capes MIMO (RI)', `baixada ${riTxt(m.dl_ri ?? m.ri)} · pujada ${riTxt(m.ul_ri)}`, 'Rank Indicator: quants fluxos de dades en paral·lel admet el canal. 1 = sense MIMO; 2 = MIMO 2x2 (cal TX_ANTENA/RX_ANTENA a 2). Si surt amb decimals és la mitjana de l\'últim segon.'],
+    ['Modulació (MCS)', `baixada ${m.dl_mcs ?? '—'} · pujada ${m.ul_mcs ?? '—'}`, 'Esquema de modulació i codificació (0–27 o 28). Més alt = més bits per símbol; el gNB l\'adapta segons el CQI i els errors.'],
+    ['Blocs repetits ↓', el('span', { class: blerCls(m.dl_nof_ok, m.dl_nof_nok) }, rebutjats(m.dl_nof_ok, m.dl_nof_nok)), 'Blocs de baixada que el mòbil no ha pogut descodificar a la primera (HARQ KO) en l\'últim segon. Per sobre del 10 % el canal va just.'],
+    ['Blocs repetits ↑', el('span', { class: blerCls(m.ul_nof_ok, m.ul_nof_nok) }, rebutjats(m.ul_nof_ok, m.ul_nof_nok)), 'Blocs de pujada que el gNB no ha pogut descodificar (CRC KO) en l\'últim segon.'],
+    ['SNR de pujada', m.pusch_snr_db != null ? `${m.pusch_snr_db.toFixed(1)} dB` : (m.pucch_snr_db != null ? `${m.pucch_snr_db.toFixed(1)} dB (PUCCH)` : null), 'Relació senyal/soroll del que rep el gNB del mòbil (canal de dades PUSCH). Per sobre de 20 dB és molt bona; per sota de 5 dB, dolenta.'],
+    ['RSRP de pujada', m.pusch_rsrp_db != null ? `${m.pusch_rsrp_db.toFixed(1)} dB` : null, 'Potència dels senyals de referència del mòbil tal com arriben al gNB. És relativa (escala digital de l\'SDR, no calibrada en dBm): serveix per comparar, no com a valor absolut.'],
+    ['Avançament (TA)', m.ta_ns != null ? `${Math.round(m.ta_ns)} ns (≈ ${Math.round(m.ta_ns * 0.15)} m)` : null, 'Timing Advance: quant s\'ha d\'avançar el mòbil perquè el senyal arribi a temps. La distància és aproximada (llum: 0,15 m per ns d\'anada i tornada) i a pocs metres no és fiable.'],
+    ['Marge de potència', m.last_phr != null ? `${m.last_phr} dB` : null, 'Power Headroom: quanta potència li queda al mòbil abans d\'arribar al màxim. Negatiu = ja transmet al màxim.'],
+  ]);
+  const ass = m.associacio === 'deduida' ? 'deduït (és l\'únic mòbil connectat a aquest gNB)' : 'pel log del gNB';
+  const peu = el('p', { class: 'nota' }, `RNTI ${m.rnti} · ${m.radio} · associat ${ass} · fa ${m.edat_s ?? '?'} s`);
+  return [el('h3', { title: 'Del planificador del gNB (ocudu), cada segon. No hi ha RSRP/RSSI de baixada per mòbil: el gNB no el mesura.' }, 'Ràdio'), fila, d, peu];
+}
+function omplirRadio(box) {
+  const t = $('#ue-desti').value, r = RADIO_UE[t];
+  const imsi = box.dataset.imsi, estat = box.dataset.estat;
+  const m = r && imsi ? r.per_imsi[imsi] : null;
+  if (m) { box.replaceChildren(...blocRadio(m)); return; }
+  if (estat !== 'connectat') { box.replaceChildren(); return; }   // en repòs o desregistrat: el gNB no el té
+  const txt = !r ? 'Carregant les mètriques de ràdio…'
+    : `Sense mètriques del gNB per a aquest mòbil${Object.values(r.fonts || {}).some((x) => x !== 'ok') ? ` (${Object.entries(r.fonts).filter(([, v]) => v !== 'ok').map(([k, v]) => `${k}: ${v}`).join('; ')})` : ''}.`;
+  box.replaceChildren(el('h3', {}, 'Ràdio'), el('p', { class: 'nota' }, txt));
+}
+function pintaRadioSense() {
+  const box = $('#ue-radio-sense'), r = RADIO_UE[$('#ue-desti').value];
+  if (!box) return;
+  const ss = (r && r.sense_mobil) || [];
+  box.replaceChildren(...(ss.length ? [el('p', { class: 'warn' },
+    `El gNB té ${ss.length} connexió(ns) de ràdio sense mòbil associat: `,
+    ss.map((m) => `RNTI ${m.rnti} (${m.radio}, CQI ${m.cqi ?? '—'}, ↓ ${mbps(m.dl_brate)})`).join(', '),
+    '. Per associar-les cal rrc_level i ngap_level a info (o debug) a la secció log del gNB.')] : []));
+}
+async function carregaRadioUE(t) {
+  if (!t) return;
+  const seq = ++SEQ_RADIO;
+  try {
+    const r = await api('GET', `/api/ues/${t}/radio`);
+    if (seq !== SEQ_RADIO || t !== $('#ue-desti').value) return;
+    RADIO_UE[t] = r;
+  } catch (e) {
+    if (seq !== SEQ_RADIO) return;
+    RADIO_UE[t] = { per_imsi: {}, sense_mobil: [], fonts: { 'ràdio': e.message } };
+  }
+  document.querySelectorAll('#ue-taula .ue-radio').forEach(omplirRadio);
+  pintaRadioSense();
 }
 async function carregaUEs() {
   await omplirDestinsUE();
@@ -698,6 +776,7 @@ async function carregaUEs() {
     const d = await api('GET', `/api/ues/${t}?historial=false`);
     if (seq !== SEQ_UE) return;
     pintaUEs(box, d, t, true);
+    carregaRadioUE(t);          // en paral·lel amb l'historial; no l'espera ningú
   } catch (e) {
     if (seq === SEQ_UE) box.replaceChildren(el('p', { class: 'error' }, e.message));
     return;

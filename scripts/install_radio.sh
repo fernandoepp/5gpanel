@@ -209,11 +209,16 @@ configs:
         autostart_stdout_metrics: true
         enable_json: true
       remote_control:
-        bind_addr: 0.0.0.0
+        # només local: el WebSocket no té contrasenya i accepta ordres (quit, ssb_set...).
+        # L'agent del panell hi llegeix les mètriques per mòbil des d'aquest mateix PC.
+        bind_addr: 127.0.0.1
         enabled: true
       log:
         filename: /tmp/gnb.log
         all_level: warning
+        # RRC i NGAP a info: el panell hi llegeix quin RNTI té cada mòbil (mètriques per mòbil)
+        rrc_level: info
+        ngap_level: info
       pcap:
         mac_enable: false
         mac_filename: /tmp/gnb_mac.pcap

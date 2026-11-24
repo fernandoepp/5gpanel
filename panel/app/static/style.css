@@ -151,6 +151,10 @@ dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; ma
 dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .ue-sessions table td { border-bottom: none; padding: 2px 6px 2px 0; }
 .ue-sessions p { margin: 4px 0 0; font-size: 13px; }
+.ue-radio:empty { display: none; }
+.ue-radio .xips { margin-bottom: 6px; }
+.ue-radio .xip b { font-variant-numeric: tabular-nums; }
+.ue-radio p.nota { margin: 4px 0 0; font-size: 12px; }
 .xips { display: flex; flex-wrap: wrap; gap: 6px; }
 .xip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--soft); border: 1px solid var(--line); }
 ul.avisos { margin: 0; padding: 8px 10px 8px 26px; border-radius: 8px; background: var(--soft); font-size: 13px; }

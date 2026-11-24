@@ -44,7 +44,15 @@ Importante: `docker restart` no relee el `.env`. Por eso el panel siempre **recr
 
 - Definir `restart_map.yaml` del core.
 - Los patrones de `estat_logs` en `panel.yaml` son heurísticas y hay que contrastarlos con los logs reales.
-- La métrica JSON del gNB (`metrics.enable_json`) todavía no se aprovecha.
+
+## Métricas de radio por móvil (gNB ocudu)
+
+La ficha de cada móvil (pestaña Dispositius) muestra, además de lo que dice el core, lo que mide la gNodeB: CQI (calidad del canal que informa el móvil, 0–15), RI (capas MIMO), MCS (modulación) de bajada y subida, velocidad de bajada y subida, bloques repetidos (HARQ/CRC KO), SNR y RSRP de subida, avance temporal (TA) y margen de potencia (PHR). Se refresca cada 3 s.
+
+- **De dónde salen:** ocudu publica cada segundo las métricas del planificador por el control remoto WebSocket (`remote_control.enabled: true`, puerto 8001 por defecto) si `metrics.enable_json: true`. El agente de la radio se suscribe (`{"cmd":"metrics_subscribe"}`) solo mientras alguien mira el panel y las sirve en `GET /radio_ues`. Se puede cambiar la URL con `"gnb_metrics": {"ws": "ws://127.0.0.1:8001"}` en `agent5g.json` (`false` lo desactiva).
+- **Qué móvil es cada RNTI:** el gNB solo conoce el RNTI (identificador de radio, cambia en cada conexión). El agente lo cruza con el log del gNB: las líneas `[RRC] ue=19 c-rnti=0x4848` y `[NGAP] ... ue=19 ran_ue=18 amf_ue=19` dan los identificadores NGAP, y el AMF dice qué IMSI tiene cada `amf_ue_ngap_id`. Hace falta `rrc_level` y `ngap_level` a `info` (o `debug`) en la sección `log:` del gNB; `install_radio.sh` ya lo pone. Sin esas líneas solo se asocia cuando hay un único móvil conectado al gNB, y se indica como «deducido».
+- **Qué no hay:** RSRP/RSSI de bajada por móvil. El gNB no los mide; lo más parecido es el CQI. El RSRP de subida es relativo (escala digital de la USRP), no dBm.
+- Las métricas se piden aparte, después de pintar las fichas: si la radio no responde, las fichas salen igual y la sección «Ràdio» dice por qué no hay datos.
 
 ## Estado en vivo del AMF y del SMF (core)
 
