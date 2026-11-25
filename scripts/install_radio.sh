@@ -7,12 +7,16 @@
 #
 # Ús:
 #   sudo ./install_radio.sh                       (pregunta el que falti)
-#   sudo ./install_radio.sh --emparellament codi.txt --core 192.168.1.100
+#   sudo ./install_radio.sh --emparellament codi.txt
+#
+# La ràdio TRUCA AL CORE (com la gNodeB a l'AMF): l'agent del panell no escolta cap port,
+# obre ell les connexions cap al core (port 9544) i les manté; si la xarxa arriba tard o
+# cau, ho reintenta sol. Al core li és igual la IP de la ràdio: l'única IP fixa és la del core.
 #
 # Opcions:
-#   --core IP            IP del core (AMF). Obligatòria (es pregunta si no hi és)
+#   --core IP            IP del core (AMF). Per defecte, la que porta el codi d'emparellament
 #   --radio IP           IP d'aquest PC (per defecte, la de la ruta cap al core)
-#   --emparellament F    fitxer amb el codi d'emparellament (sudo emparella-radio <IP> al core);
+#   --emparellament F    fitxer amb el codi d'emparellament (al core: sudo emparella-radio <nom>);
 #                        sense aquesta opció es demana que l'enganxis
 #   --ocudu DIR          on es clona ocudu (per defecte ~/ocudu de l'usuari)
 #   --sense-build        no construir la imatge ni arrencar el gNB (només configurar + agent)
@@ -30,7 +34,6 @@
 # ============================================================================
 set -euo pipefail
 OCUDU_REPO="${OCUDU_REPO:-https://gitlab.com/ocudu/ocudu.git}"
-PORT_AGENT=9543
 CORE_IP=""; RADIO_IP=""; EMPAR=""; OCUDU=""; AMB_BUILD=1; AMB_AGENT=1
 
 pas()   { echo; echo "==> [$1] $2"; }
@@ -66,8 +69,37 @@ pregunta() {   # pregunta <text> <variable> [per defecte]
     printf -v "$var" '%s' "${r:-$def}"
 }
 
-# --- 0. dades -----------------------------------------------------------------
+# codi d'emparellament (abans de la part lenta, per no haver d'esperar-se 40 minuts)
+CODI=""; NOM_RADIO=""; CORE_ENLLAC=""
+if (( AMB_AGENT )); then
+    if [[ -n "$EMPAR" ]]; then
+        CODI="$(cat "$EMPAR")"
+    elif [[ -t 0 ]]; then
+        echo "    Al core, executa:  sudo emparella-radio <nom_d_aquesta_radio>   (p. ex. aula2)"
+        echo "    i enganxa aquí el codi (de la línia BEGIN a la línia END):"
+        while IFS= read -r l; do
+            CODI+="$l"$'\n'
+            [[ "$l" == "-----END 5GPANEL EMPARELLAMENT-----" ]] && break
+        done
+    fi
+    NOM_RADIO="$(sed -n 's/^-----BEGIN 5GPANEL EMPARELLAMENT \([A-Za-z0-9_.-]*\)-----$/\1/p' <<<"$CODI" | head -1)"
+    [[ -n "$NOM_RADIO" ]] \
+        || error "falta el codi d'emparellament d'aquesta ràdio. Genera'l al core amb: sudo emparella-radio <nom>"
+    TMPC="$(mktemp -d)"; trap 'rm -rf "$TMPC"' EXIT
+    sed -n '/^-----BEGIN/,/^-----END/{/^-----/d;p}' <<<"$CODI" | base64 -d | tar xzf - -C "$TMPC" \
+        || error "el codi d'emparellament està malmès (copia'l sencer)"
+    for f in ca.crt agent-radio.crt agent-radio.key; do [[ -s "$TMPC/$f" ]] || error "al codi hi falta $f"; done
+    openssl verify -CAfile "$TMPC/ca.crt" -purpose sslclient "$TMPC/agent-radio.crt" >/dev/null 2>&1 \
+        || error "el codi és d'abans de l'enllaç ràdio -> core o d'una altra CA: torna'l a generar al core (sudo emparella-radio $NOM_RADIO)"
+    [[ -s "$TMPC/core" ]] || error "el codi no porta la IP del core (és antic): torna'l a generar al core (sudo emparella-radio $NOM_RADIO)"
+    CORE_ENLLAC="$(tr -d '[:space:]' < "$TMPC/core")"
+    [[ "$CORE_ENLLAC" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || error "IP del core del codi invàlida: $CORE_ENLLAC"
+    info "codi d'emparellament correcte: ràdio \"$NOM_RADIO\", trucarà al core ${CORE_ENLLAC}"
+fi
+
 pas 0 "Dades de la ràdio"
+# --- 0. dades -----------------------------------------------------------------
+[[ -n "$CORE_IP" ]] || pregunta "IP del core (AMF, PC1)" CORE_IP "${CORE_ENLLAC%:*}"
 [[ -n "$CORE_IP" ]] || pregunta "IP del core (AMF, PC1)" CORE_IP "${CORE_IP_DEFECTE:-192.168.1.100}"
 es_ip "$CORE_IP" || error "IP del core invàlida: '$CORE_IP'"
 if [[ -z "$RADIO_IP" ]]; then
@@ -77,32 +109,6 @@ fi
 es_ip "$RADIO_IP" || error "IP de la ràdio invàlida: '$RADIO_IP'"
 ip -4 -o addr show | grep -q " $RADIO_IP/" || error "$RADIO_IP no és una IP d'aquest PC"
 info "core $CORE_IP · ràdio $RADIO_IP · ocudu a $OCUDU"
-
-# codi d'emparellament (abans de la part lenta, per no haver d'esperar-se 40 minuts)
-CODI=""
-if (( AMB_AGENT )); then
-    if [[ -n "$EMPAR" ]]; then
-        CODI="$(cat "$EMPAR")"
-    elif [[ -t 0 ]]; then
-        echo "    Al core, executa:  sudo emparella-radio $RADIO_IP"
-        echo "    i enganxa aquí el codi (de la línia BEGIN a la línia END):"
-        while IFS= read -r l; do
-            CODI+="$l"$'\n'
-            [[ "$l" == "-----END 5GPANEL EMPARELLAMENT-----" ]] && break
-        done
-    fi
-    grep -q "^-----BEGIN 5GPANEL EMPARELLAMENT $RADIO_IP-----" <<<"$CODI" \
-        || error "falta el codi d'emparellament d'aquesta ràdio ($RADIO_IP). Genera'l al core amb: sudo emparella-radio $RADIO_IP"
-    TMPC="$(mktemp -d)"; trap 'rm -rf "$TMPC"' EXIT
-    sed -n '/^-----BEGIN/,/^-----END/{/^-----/d;p}' <<<"$CODI" | base64 -d | tar xzf - -C "$TMPC" \
-        || error "el codi d'emparellament està malmès (copia'l sencer)"
-    for f in ca.crt agent-radio.crt agent-radio.key; do [[ -s "$TMPC/$f" ]] || error "al codi hi falta $f"; done
-    openssl verify -CAfile "$TMPC/ca.crt" "$TMPC/agent-radio.crt" >/dev/null 2>&1 \
-        || error "el certificat de la ràdio no és de la CA del codi"
-    openssl x509 -in "$TMPC/agent-radio.crt" -noout -ext subjectAltName 2>/dev/null | grep -qE "IP Address:${RADIO_IP//./\\.}(,|\$)" \
-        || error "el certificat no és per a $RADIO_IP: genera'l al core per a aquesta IP"
-    info "codi d'emparellament correcte"
-fi
 
 # --- 1. programari (guia, apartat 2) -------------------------------------------
 pas 1 "git, curl i Docker"
@@ -327,7 +333,7 @@ if (( AMB_AGENT )); then
     install -m 755 "$SRC/agent/agent5g.py" /opt/agent5g/agent5g.py
     install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
     install -m 600 "$TMPC/ca.crt" "$TMPC/agent-radio.crt" "$TMPC/agent-radio.key" /etc/agent5g/certs/
-    PROJ="$DOCKER_DIR" RIP="$RADIO_IP" PORT="$PORT_AGENT" python3 - <<'PY'
+    PROJ="$DOCKER_DIR" NOM="$NOM_RADIO" CORE="$CORE_ENLLAC" python3 - <<'PY'
 import json, os
 f = '/etc/agent5g/agent5g.json'
 old = {}
@@ -336,8 +342,10 @@ if os.path.isfile(f):
         old = json.load(fh)
 ip = r'^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 cfg = {
-    'role': 'radio', 'name': old.get('name', f"Ràdio {os.environ['RIP']}"),
-    'listen': 'auto', 'port': int(os.environ['PORT']),   # segueix la IP de la LAN encara que canviï
+    'role': 'radio', 'name': old.get('name', f"Ràdio {os.environ['NOM']}"),
+    # la ràdio truca al core (enllaç ràdio -> core): no escolta cap port i li és igual la seva IP
+    'listen': None, 'core': os.environ['CORE'].rsplit(':', 1)[0],
+    'core_port': int(os.environ['CORE'].rsplit(':', 1)[1]),
     'cert': '/etc/agent5g/certs/agent-radio.crt', 'key': '/etc/agent5g/certs/agent-radio.key',
     'ca': '/etc/agent5g/certs/ca.crt', 'allowed_client_cn': ['panel5g'],
     'project_dir': os.environ['PROJ'], 'env_file': '.env',
@@ -367,15 +375,14 @@ PY
     systemctl daemon-reload
     systemctl enable agent5g >/dev/null 2>&1
     systemctl restart agent5g
-    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
-        XARXA="$(python3 -c "import ipaddress,sys; print(ipaddress.ip_network(sys.argv[1] + '/24', strict=False))" "$RADIO_IP")"
-        avis "ufw està actiu i no el toco: perquè el panell arribi a l'agent, obre el port amb"
-        avis "  sudo ufw allow from $XARXA to any port $PORT_AGENT proto tcp comment agent5g"
-    fi
-    sleep 2
+    sleep 4
     if systemctl is-active -q agent5g; then
-        info "agent5g actiu a https://$RADIO_IP:$PORT_AGENT (s'inicia sol en arrencar i es reinicia sempre)"
-        info "el panell el trobarà sol en la següent cerca (cada 2 min)"
+        info "agent5g actiu (s'inicia sol en arrencar i es reinicia sempre): truca al core $CORE_ENLLAC"
+        if journalctl -u agent5g --since "-20s" --no-pager 2>/dev/null | grep -q "connectat al core"; then
+            info "connectat al core: la ràdio \"$NOM_RADIO\" ja surt al panell"
+        else
+            avis "encara no ha connectat amb el core $CORE_ENLLAC (ho reintenta sol). Mira: journalctl -u agent5g -n 20"
+        fi
     else
         avis "agent5g no ha arrencat: journalctl -u agent5g -n 30"
     fi

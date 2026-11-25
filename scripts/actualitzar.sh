@@ -49,6 +49,42 @@ if [[ -f "$SRC/panel/config/models.csv" && ! -f "$PANEL_DIR/config/models.csv" ]
   install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/config/models.csv" "$PANEL_DIR/config/"
 fi
 
+# Enllaç ràdio -> core: ara són les ràdios les que truquen a l'agent del core (port 9544).
+#  - eines d'emparellament noves (emparella-radio <nom>; el codi porta la IP del core)
+#  - la ràdio fixa de panel.yaml (agents.radio amb la IP de la ràdio) es comenta: la ràdio
+#    apareix sola quan truca al core (a la ràdio: sudo bash scripts/enllaca_radio.sh codi.txt)
+if [[ -d /opt/agent5g/eines ]]; then
+  CERTS_EINES=$(sed -n 's#^CERTS=\${2:-\(.*\)}$#\1#p' /opt/agent5g/eines/emparella_radio.sh 2>/dev/null | head -1)
+  install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
+  [[ -n $CERTS_EINES ]] && sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS_EINES}#" /opt/agent5g/eines/emparella_radio.sh
+  ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
+fi
+[[ -s /etc/agent5g/core_ip ]] || printf '%s\n' "$PANEL_IP" > /etc/agent5g/core_ip
+cp -a "$PANEL_DIR/config/panel.yaml" "$BK/"
+python3 - "$PANEL_DIR/config/panel.yaml" <<'PY'
+import re, sys
+f = sys.argv[1]
+ls = open(f).read().split('\n')
+out, dins, canvi, sec = [], False, False, None
+for l in ls:
+    m = re.match(r'^([A-Za-z_]\w*):', l)
+    if m:
+        sec = m.group(1)                 # només dins de "agents:" (estat_logs també té "radio:")
+    if sec == 'agents' and re.match(r'^  radio:', l):
+        dins = True
+        canvi = True
+        out.append('  # (enllaç ràdio -> core: la ràdio ja no va aquí, truca sola al core)')
+        out.append('# ' + l)
+        continue
+    if dins and re.match(r'^    \S', l):
+        out.append('# ' + l)
+        continue
+    dins = False
+    out.append(l)
+if canvi:
+    open(f, 'w').write('\n'.join(out))
+    print('>> panel.yaml: comentada la ràdio fixa (ara la ràdio truca al core)')
+PY
 systemctl daemon-reload
 systemctl enable --now ua-capture
 systemctl restart agent5g
@@ -58,11 +94,12 @@ systemctl --no-pager --lines=0 status ua-capture agent5g | grep -E '●|Active:'
 if systemctl is-active -q ua-capture && systemctl is-active -q agent5g; then
   echo ">> Fet. Panell: https://$PANEL_IP:8443 (Ctrl+F5). Ha de dir 'Versió v15' a la barra lateral."
   echo "   VoIP: Abonats i VoIP > Servei de telefonia > Activat (el core 5G no s'atura)."
-  echo "   Ràdios noves: scripts/gen_certs.sh --radio <IP> (on tinguis la CA) i install_agent.sh a la ràdio."
+  echo "   Ràdios: al core, sudo emparella-radio <nom>; a la ràdio, sudo bash scripts/enllaca_radio.sh codi.txt"
+  echo "   (ràdio ja instal·lada) o install_radio.sh (nova). La ràdio truca sola al core $PANEL_IP:9544."
 else
   echo ">> ALERTA: algun servei no ha arrencat. Per tornar enrere:"
   echo "   systemctl disable --now ua-capture; cp $BK/agent5g.py /opt/agent5g/; systemctl restart agent5g"
-  echo "   cp -a $BK/app/. $PANEL_DIR/app/; cp $BK/schema.yaml $PANEL_DIR/config/"
+  echo "   cp -a $BK/app/. $PANEL_DIR/app/; cp $BK/schema.yaml $BK/panel.yaml $PANEL_DIR/config/"
   echo "   cd $PANEL_DIR && PANEL_IP=$PANEL_IP docker compose up -d --build"
   exit 1
 fi

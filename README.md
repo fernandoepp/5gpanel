@@ -5,32 +5,29 @@ Interfaz web (por defecto en PC1, core; puede ir en cualquiera de los dos PCs) p
 ## Arquitectura
 
 ```
-Navegador ──HTTPS + login──► panel5g (Docker, PC1, solo IP LAN:8443)
-                                 │  sin docker.sock, sin carpetas de los proyectos
-                    mTLS ┌───────┴────────┐ mTLS
-                         ▼                ▼
-       agent5g PC1 (172.17.0.1:9443)      agent5g PC2 (IP_PC2:9443, ufw: solo PC1)
-       .env de docker_open5gs             .env de ocudu/docker
+Navegador ──HTTPS + login──► panel5g (Docker, PC del core, IP_core:8443)
+                                 │ mTLS (host.docker.internal:9543)
+                                 ▼
+                agent5g del core ◄──── mTLS, puerto 9544 ──── agent5g de cada radio
+                .env de docker_open5gs   (la RADIO abre la      .env de ocudu/docker
+                                          conexión y la mantiene)
 ```
-Para moverlo a PC2, intercambia `listen` de los agentes y las URL de `panel.yaml`. Los certificados sirven para las dos ubicaciones.
+**La radio llama al core**, igual que la gNodeB llama al AMF: el agente de la radio no escucha ningún
+puerto, abre él las conexiones cifradas hacia el puerto 9544 del core y las mantiene. Al core le da igual
+la IP de la radio; **la única IP fija es la del core**. Ver «Enlace radio → core» más abajo.
 
 - **Panel** (`panel/`): FastAPI. Login con contraseña scrypt, roles `admin` / `lector`, cookie `Secure`/`HttpOnly`/`SameSite=Strict`, token CSRF, límite de 5 intentos por IP cada 5 min, CSP estricta. El contenedor es de solo lectura, sin capacidades y corre como usuario sin privilegios.
-- **Agente** (`agent/agent5g.py`): solo usa la biblioteca estándar de Python y corre como servicio systemd. Solo acepta clientes con certificado de la CA propia y CN `panel5g`. Lo único que sabe hacer está en lista blanca: leer logs de contenedores permitidos, leer el `.env` (oculta los secretos), editar claves permitidas (con regex), restaurar copias y hacer `docker compose up -d --no-deps <servicio permitido>`. Hace una copia antes de cada escritura (guarda las 50 últimas) y lleva auditoría en `/var/lib/agent5g/audit.log`.
+- **Agente** (`agent/agent5g.py`): solo usa la biblioteca estándar de Python y corre como servicio systemd. Solo acepta peticiones del panel (certificado de la CA propia y CN `panel5g`; en la radio, a través del agente del core). Lo único que sabe hacer está en lista blanca: leer logs de contenedores permitidos, leer el `.env` (oculta los secretos), editar claves permitidas (con regex), restaurar copias y hacer `docker compose up -d --no-deps <servicio permitido>`. Hace una copia antes de cada escritura (guarda las 50 últimas) y lleva auditoría en `/var/lib/agent5g/audit.log`.
 - **Validación** (`panel/config/schema.yaml`): valores permitidos y reglas cruzadas. SRATE tiene que estar en la lista de la B210, ser ≥ 1.152 × ancho y como máximo 46.08 (23.04 y 20 MHz con 2x2). El ARFCN tiene que caer dentro de la banda y la frecuencia, dentro del rango de la B210. Además avisa si el PLMN del gNB no coincide con el MCC+MNC del core.
 - **Mapa de reinicios** (`panel/config/restart_map.yaml`): indica qué servicios hay que recrear para cada clave. El del core está **vacío, pendiente de definir**. Mientras tanto, los servicios se eligen a mano en el panel.
 
 ## Instalación
 
-1. **Certificados** (en cualquier PC; guarda `ca/ca.key` fuera de los PCs):
-   `./scripts/gen_certs.sh <IP_PC1> <IP_PC2> ./certs-5g`
-2. **Agente en PC2 (radio)**: `sudo bash scripts/install_agent.sh radio ./certs-5g/agent-radio <IP_PC1>`
-   La primera vez copia `agent5g-radio.json` a `/etc/agent5g/agent5g.json`. Revisa `listen` (IP LAN de PC2) y `project_dir`, y vuelve a ejecutarlo. Con ufw activo, solo PC1 entra al 9443.
-3. **Agente en PC1 (core)**: `sudo bash scripts/install_agent.sh core ./certs-5g/agent-core`
-   Escucha en 172.17.0.1, así que no se ve desde la LAN. Revisa `project_dir` (`~/core5g/<versión>/docker_open5gs`), `compose_files` y los contenedores.
-4. **Panel en PC1**:
-   - Genera el hash de la contraseña con `sudo bash scripts/install_panel.sh ./certs-5g/panel <IP_PC1>` (te dice cómo) y pégalo en `panel/config/panel.yaml`.
-   - Vuelve a ejecutar el script. El panel queda en `https://<IP_PC1>:8443`.
-5. Importa `certs-5g/ca/ca.crt` como CA de confianza en los navegadores del laboratorio.
+1. **Core**: `core5g.sh` (paso 12) llama a `scripts/install_core.sh`, que crea la CA e instala el agente del core
+   (puerto 9543 para el panel y 9544 para las radios). Panel: `scripts/install_panel.sh` (ver más abajo).
+2. **Cada radio**: en el core `sudo emparella-radio <nombre>` (p. ej. `aula2`) y en la radio
+   `sudo bash scripts/install_radio.sh --emparellament codigo.txt` (o pega el código cuando lo pida).
+3. Importa `certs-5g/ca/ca.crt` como CA de confianza en los navegadores del laboratorio.
 
 ## Flujo de un cambio
 
@@ -70,7 +67,7 @@ El modelo sale de los 8 primeros dígitos del IMEI (TAC). Primero se mira `confi
 
 - Los agentes se identifican por el certificado (firmado por nuestra CA y con CN `agent-core` o `agent-radio*`), no por la IP: si la IP cambia no hace falta volver a emitir certificados.
 - El agente de radio con `"listen": "auto"` escucha en la IP de la LAN que tenga en cada momento y se reinicia solo si el DHCP la cambia. Si la IP configurada ya no existe, usa la actual en lugar de reiniciarse en bucle.
-- El panel busca radios también en la /24 de su propia IP (`PANEL_IP`).
+- Con el enlace radio → core, el cambio de IP de la radio no afecta al panel. Lo único que tiene que ser fijo es la IP del core (resérvala en el router).
 - `scripts/canviar_xarxa.sh core <IP_radio>` (en el core) y `scripts/canviar_xarxa.sh radio <IP_core>` (en la radio) cambian las IPs viejas por las nuevas en `.env`, `sa-deploy.yaml`, `smf.yaml`, `panel.yaml`, `upf_remot/.env` y el `.env` de ocudu, con copia de cada fichero, y recrean el SMF, el panel, la UPF y la gNB. Con `-n` solo muestra lo que cambiaría.
 
 ## Modelo del móvil por el tráfico (opcional, core)
@@ -165,21 +162,37 @@ las variables del `.env`; los mensajes de validación sustituyen el nombre inter
 Las opciones avanzadas (patrón TDD, segundo PLMN) son interruptores Activado/Desactivado + Desa.
 Un UE registrado en CM-IDLE se muestra como «Connectat (en repòs)», en verde.
 
-## Varias radios (descubrimiento)
-El panel busca agentes cada 2 min. Por defecto en la /24 de cada agente de `panel.yaml` con IP de LAN
-(con la config actual: 192.168.2.0/24) y en el puerto de la radio (9543). Solo añade un equipo si
-presenta un certificado firmado por la CA del panel, emitido para esa IP, y acepta el certificado
-cliente del panel. Si deja de responder 3 búsquedas seguidas, desaparece. Opcional en `panel.yaml`:
-```yaml
-descobriment:
-  actiu: true
-  xarxes: ["192.168.2.0/24", "10.240.4.0/24"]   # como mucho /22 cada una
-  port: 9543
-  interval_s: 120
-```
-Radio nueva: en el core, `sudo emparella-radio <IP_radio>` imprime el **código de emparejamiento**
-(ver más abajo) y en la radio `install_radio.sh` lo pide. Se puede poner `"name": "Ràdio aula 2"` en
-`/etc/agent5g/agent5g.json` de la radio.
+## Enlace radio → core (varias radios)
+Como la gNodeB con el AMF, **es la radio la que llama al core**:
+
+1. El agente de la radio (`"core": "IP_core"`, `"core_port": 9544` en `/etc/agent5g/agent5g.json`, sin
+   `listen`) abre 3 conexiones TLS hacia el agente del core y las deja abiertas, esperando.
+2. Cada lado comprueba al otro por el certificado: la radio presenta el suyo (firmado por la CA, CN
+   `agent-radio-<nombre>`, con uso «cliente») y solo acepta un core con CN `agent-core`. No se mira la IP
+   de nadie: si el DHCP cambia la IP de la radio, sigue funcionando.
+3. Cuando el panel quiere hablar con una radio, se lo pide al agente del core (`GET /radios`,
+   `/radio/<nombre>/<petición de siempre>`). El core escribe la petición en una de esas conexiones; la radio
+   la contesta con la misma lista blanca de siempre, cierra esa conexión y abre otra.
+4. **Reconexión sola**: si el core no está (arranque, red que llega tarde, cable, reinicio del core), la
+   radio lo reintenta cada 2 s, luego cada vez más espaciado hasta cada 30 s, sin límite. Las conexiones en
+   espera se renuevan cada minuto, así que un corte se nota en menos de un minuto.
+5. El panel pregunta al core cada 10 s qué radios hay. Una radio aparece sola al conectarse (con el
+   `"name"` de su `agent5g.json`, o «Ràdio <nombre>») y desaparece unos 20 s después de irse.
+
+Varias radios = varios códigos de emparejamiento con nombres distintos. Puertos: solo hay que poder llegar
+**de la radio al core, puerto 9544/tcp**; la radio no abre ningún puerto (con ufw en el core:
+`sudo ufw allow 9544/tcp`). `panel.yaml` ya no lleva radios.
+
+**Pasar una radio ya instalada** (p. ej. server2core5G) al enlace nuevo:
+1. Core: `sudo bash scripts/actualitzar.sh` (agente con el puerto 9544, `emparella-radio` nuevo; comenta la
+   radio fija de `panel.yaml`, con copia).
+2. Core: `sudo emparella-radio <nombre>` → código (lleva la IP del core).
+3. Radio: `sudo bash scripts/enllaca_radio.sh codigo.txt`. Solo cambia el agente, sus certificados y
+   `listen`/`core` de `agent5g.json` (con copia); no toca el gNB ni su `.env`.
+
+Los códigos de emparejamiento anteriores no sirven (el certificado no tenía uso «cliente» y no llevaban la IP
+del core): hay que generarlos de nuevo. La búsqueda por la red del sistema anterior (`descobriment`) queda
+desactivada por defecto; solo sirve para radios antiguas que aún escuchan (`descobriment: {actiu: true}`).
 
 ## Servicio VoIP activable
 Abonats i VoIP → «Servei de telefonia» → Activado. El agente del core, en segundo plano:
@@ -199,16 +212,17 @@ Lo llama `core5g.sh` (paso 12) tras levantar el núcleo. Crea la CA si no existe
 `gen_certs.sh --core`, que deja también los certificados del panel en `certs-5g/panel/`), instala tshark y
 **solo el agente del core** (mTLS en `0.0.0.0:9543`, captura NGAP/SBI, User-Agent, VoIP activable) con su
 `agent5g.json` generado del compose real. **No instala el panel** (eso es `scripts/install_panel.sh`, aparte).
-Al final imprime el código de emparejamiento de cada radio: `CORE5G_RADIOS="IP1 IP2"` o, con terminal, lo
-pregunta. Repetirlo es seguro: no cambia certificados existentes.
+Al final imprime el código de emparejamiento de cada radio: `CORE5G_RADIOS="aula1 aula2"` (nombres) o,
+con terminal, lo pregunta. Guarda la IP del core en `/etc/agent5g/core_ip` para los códigos. Repetirlo es seguro: no cambia certificados existentes.
 `core5g.sh` descarga este repositorio de `CORE5G_PANELL_REPO` (o usa `--panell carpeta|tar.gz`; `--sense-panell` lo omite).
 
 ### Código de emparejamiento
-`sudo emparella-radio <IP_radio>` (en el core, donde está la CA) emite el certificado de esa radio y
-imprime un bloque `-----BEGIN 5GPANEL EMPARELLAMENT <IP>----- … -----END 5GPANEL EMPARELLAMENT-----`:
-base64 de un tar.gz con `ca.crt`, `agent-radio.crt` y `agent-radio.key`. **Nunca lleva `ca.key`**, pero sí
-la clave privada del agente de esa radio: no lo publiques. Se guarda también en
-`/root/certs-5g/emparellament-<IP>.txt` por si prefieres copiarlo con scp.
+`sudo emparella-radio <nombre>` (en el core, donde está la CA) emite el certificado de esa radio y
+imprime un bloque `-----BEGIN 5GPANEL EMPARELLAMENT <nombre>----- … -----END 5GPANEL EMPARELLAMENT-----`:
+base64 de un tar.gz con `ca.crt`, `agent-radio.crt`, `agent-radio.key` y `core` (IP:puerto del core al que
+debe llamar; `CORE5G_CORE_IP=…` para otra). **No hace falta la IP de la radio.** **Nunca lleva `ca.key`**,
+pero sí la clave privada del agente de esa radio: no lo publiques. Se guarda también en
+`/root/certs-5g/emparellament-<nombre>.txt` por si prefieres copiarlo con scp.
 
 ## Instalación de la radio (guía de despliegue, apartado de la parte radio)
 `sudo bash scripts/install_radio.sh [--core IP] [--radio IP] [--emparellament fichero] [--ocudu DIR] [--sense-build] [--sense-agent]`
@@ -220,12 +234,12 @@ la clave privada del agente de esa radio: no lo publiques. Se guarda también en
    tenga el `.env` > variables de entorno (`PLMN=… TAC=…`) > los de la guía.
 5. Imágenes UHD de la B210 (`uhd_images_downloader`).
 6. `docker compose -f docker/docker-compose.yml build` (~40 min la primera vez) y `up -d`.
-7. Agente de la radio (mTLS en `<IP_radio>:9543`) con los certificados del código de emparejamiento.
+7. Agente de la radio con los certificados del código: **llama al core** (IP:puerto del código) y no escucha ningún puerto.
 
-El código se valida **antes** de la parte lenta (que sea de esa IP y de la misma CA).
+El código se valida **antes** de la parte lenta (misma CA, certificado nuevo con uso «cliente», IP del core).
+`--core` es opcional: por defecto se usa la IP del core del código.
 Diferencias con la guía para que el panel pueda gestionarla: `PLMN_1` en vez de `PLMN`, antenas
 parametrizadas (`RX_ANTENA`/`TX_ANTENA`, 1 por defecto) y el gNB arranca en segundo plano (`docker logs -f ocudu_gnb`).
-Si ufw está activo no se toca: el script indica la regla para abrir el 9543 a la /24.
 
 ## Siempre en marcha
 `agent5g`, `ngap-capture` y `ua-capture` son servicios systemd habilitados con `Restart=always`,

@@ -144,17 +144,22 @@ async function pintaEquips(forca) {
   let r;
   try { r = forca ? await api('POST', '/api/equips/descobreix', {}) : await api('GET', '/api/equips'); }
   catch (e) { box.replaceChildren(el('p', { class: 'error' }, e.message)); return; }
-  const ds = r.descobriment || {};
-  const btn = el('button', { type: 'button', disabled: ME.rol !== 'admin' || ds.en_curs }, ds.en_curs ? 'Cercant…' : 'Cerca equips ara');
+  const ds = r.descobriment || {}, en = r.enllac || {};
+  const btn = el('button', { type: 'button', disabled: ME.rol !== 'admin' || ds.en_curs }, ds.en_curs ? 'Cercant…' : 'Actualitza');
   btn.addEventListener('click', async () => { btn.disabled = true; btn.textContent = 'Cercant…'; await pintaEquips(true); });
   const quanD = ds.darrera ? new Date(ds.darrera * 1000).toLocaleTimeString() : 'encara no';
+  const titolEq = (e) => e.enllac
+    ? `La ràdio truca al core amb el seu certificat de la CA (ara des de ${e.ip || '?'}${e.des_de ? ', connectada des de ' + new Date(e.des_de).toLocaleString() : ''})`
+    : e.descobert ? 'Trobat per la cerca a la xarxa: certificat de la CA del panell vàlid per a aquesta IP' : 'Definit a la configuració del panell';
+  const errs = Object.entries(en.errors || {});
+  const notes = [el('p', { class: 'nota' }, 'Les ràdios es connecten soles al core (port 9544) amb el certificat del codi d\'emparellament: no cal saber-ne la IP. Ràdio nova: al core, sudo emparella-radio <nom>.')];
+  if (errs.length) notes.push(el('p', { class: 'error' }, errs.map(([t, m]) => `No puc preguntar a ${ME.titols[t] || t} quines ràdios té: ${m}`).join(' · ')));
+  if (ds.actiu) notes.push(el('p', { class: 'nota' }, `També cerca agents antics a ${(ds.xarxes || []).join(', ') || '—'} (port ${ds.port || '?'}). Darrera cerca: ${quanD}.`));
   box.replaceChildren(el('div', { class: 'card' },
     el('div', { class: 'cap-card' }, el('h2', {}, 'Equips gestionats'), btn),
-    el('div', { class: 'equips' }, r.equips.map((e) => el('span', { class: `pastilla ${e.descobert ? 'ok' : ''}`,
-      title: e.descobert ? 'Trobat automàticament: certificat de la CA del panell vàlid per a aquesta IP' : 'Definit a la configuració del panell' },
-      `${e.titol}${e.descobert ? ' · descobert' : ''}`))),
-    el('p', { class: 'nota' }, ds.actiu === false ? 'La cerca automàtica està desactivada a la configuració.'
-      : `Cerca automàtica d'agents a ${(ds.xarxes || []).join(', ') || '—'} (port ${ds.port || '?'}). Només s'afegeixen els que presenten un certificat signat per la CA del panell. Darrera cerca: ${quanD}.`)));
+    el('div', { class: 'equips' }, r.equips.map((e) => el('span', { class: `pastilla ${e.descobert ? 'ok' : ''}`, title: titolEq(e) },
+      `${e.titol}${e.enllac ? ' · connectada al core' : e.descobert ? ' · descobert' : ''}`))),
+    ...notes));
   if (r.equips.length !== EQUIPS_N) { EQUIPS_N = r.equips.length; refrescaEquips(); }
 }
 

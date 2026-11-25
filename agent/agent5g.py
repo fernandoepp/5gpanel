@@ -35,6 +35,12 @@ permès. Només sap fer operacions d'una llista blanca:
   GET  /radio_ues              -> mètriques de ràdio per UE del gNB (CQI, RI, MCS, velocitat...)
                                   amb els identificadors NGAP de cada RNTI (log del gNB)
   GET  /audit?tail=N
+  GET  /radios                 -> (core) ràdios connectades al core per l'enllaç ràdio -> core
+  GET|POST /radio/<id>/<camí>  -> (core) reenvia la petició a aquella ràdio per l'enllaç
+
+Enllaç ràdio -> core: amb "core": "IP_del_core" a la configuració, la ràdio no escolta cap
+port; és ella qui obre connexions mTLS cap al port 9544 de l'agent del core (com la gNodeB
+amb l'AMF). Al core li és igual la IP de la ràdio. Vegeu la secció "enllaç" més avall.
 
 Només fa servir la biblioteca estàndard de Python (>= 3.8), per instal·lar-lo
 sense pip al host. Mai crida cap shell: tots els subprocessos van amb llista d'arguments.
@@ -90,9 +96,16 @@ def load_config(path):
     cfg.setdefault('max_log_lines', 2000)
     cfg.setdefault('max_backups', 50)
     cfg.setdefault('apply_timeout', 300)
-    for k in ('project_dir', 'backup_dir', 'audit_log', 'cert', 'key', 'ca', 'listen'):
+    for k in ('project_dir', 'backup_dir', 'audit_log', 'cert', 'key', 'ca'):
         if k not in cfg:
             sys.exit(f'config: falta "{k}"')
+    # "listen": on escolta el panell directament (opcional; null = no escolta). Una ràdio amb
+    # "core": "IP_del_core" no escolta res: és ella qui truca al core (enllaç ràdio -> core).
+    cfg.setdefault('listen', None)
+    if cfg.get('role') == 'core':
+        cfg.setdefault('enllac', {'listen': '0.0.0.0', 'port': 9544})
+    if not cfg['listen'] and not cfg.get('core') and not cfg.get('enllac'):
+        sys.exit('config: cal "listen" (escoltar el panell) o "core" (IP del core, enllaç ràdio -> core)')
     cfg['_editable'] = {k: re.compile(v) for k, v in cfg['editable_keys'].items()}
     # contenidors IMS: es poden veure (estat i logs) si la VoIP és permesa en aquest equip
     v = cfg.get('voip') or {}
@@ -2385,9 +2398,53 @@ class Handler(BaseHTTPRequestHandler):
         u = self.headers.get('X-Panel-User', '-')
         return u if NAME_RE.match(u) else '?'
 
+    def via_enllac(self, method):
+        """(core) /radios i /radio/<id>/... -> enllaç amb les ràdios. True si l'ha atès."""
+        path = urlparse(self.path).path
+        if path != '/radios' and not path.startswith('/radio/'):
+            return False
+        if ENLLAC is None:
+            self.send_json(404, {'error': 'aquest equip no rep ràdios (enllaç desactivat)'})
+            return True
+        if path == '/radios':
+            self.send_json(200, {'radios': ENLLAC.radios()})
+            return True
+        resta = self.path[len('/radio/'):]
+        rid, _, cami = resta.partition('/')
+        try:
+            body = self.body_raw() if method == 'POST' else None
+            # aplicar / arrencar el projecte pot trigar minuts
+            llarg = method == 'POST' and urlparse('/' + cami).path in ('/apply', '/project', '/plmn', '/tdd')
+            codi, ctype, dades = ENLLAC.peticio(rid, method, '/' + cami, self.user(), body,
+                                                timeout=CFG['apply_timeout'] + 30 if llarg else 120)
+        except LookupError as e:
+            self.send_json(503, {'error': str(e)})
+            return True
+        except ValueError as e:
+            self.send_json(400, {'error': str(e)})
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.send_json(502, {'error': f'ràdio {rid}: {type(e).__name__}'})
+            return True
+        self.send_response(codi)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(dades)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(dades)
+        return True
+
+    def body_raw(self):
+        n = int(self.headers.get('Content-Length') or 0)
+        if n > MAX_BODY:
+            raise ValueError('cos massa gran')
+        return self.rfile.read(n) if n else b'{}'
+
     def do_GET(self):
         cn = self.authorized()
         if not cn:
+            return
+        if self.via_enllac('GET'):
             return
         url = urlparse(self.path)
         qs = parse_qs(url.query)
@@ -2402,7 +2459,10 @@ class Handler(BaseHTTPRequestHandler):
                                      'ue_capture': bool(CFG.get('ue_capture')),
                                      'estat5g': 'amf' in CFG['containers'],
                                      'nom': CFG.get('name'), 'voip': bool(voip_cfg()['permes']),
-                                     'radio_ues': bool(_radio_cfg())})
+                                     'radio_ues': bool(_radio_cfg()),
+                                     'enllac': ({**ENLLAC_ESTAT, 'connectat': ENLLAC_ESTAT['connexions'] > 0}
+                                                if CFG.get('core') else None),
+                                     'rep_radios': ENLLAC is not None})
             elif url.path == '/env':
                 self.send_json(200, {'env': public_env()})
             elif url.path == '/env/backups':
@@ -2471,6 +2531,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         cn = self.authorized()
         if not cn:
+            return
+        if self.via_enllac('POST'):         # sense LOCK: no bloqueja les operacions del core
             return
         path = urlparse(self.path).path
         user = self.user()
@@ -2558,6 +2620,314 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {'error': type(e).__name__})
 
 
+# ---------------------------------------------------------------- enllaç ràdio -> core
+# Com la gNodeB amb l'AMF: és la RÀDIO qui truca al CORE, i al core li és igual quina IP
+# tingui la ràdio. L'única IP fixa és la del core.
+#
+#   ràdio (agent5g, "core": "IP_core")  --mTLS-->  agent del core, port 9544 ("enllac")
+#
+# La ràdio obre i manté unes quantes connexions TLS cap al core (amb el seu certificat de
+# la CA; el core es comprova pel certificat, CN agent-core). Cada connexió queda en espera
+# i, quan el panell vol parlar amb aquella ràdio, l'agent del core hi escriu UNA petició
+# HTTP i la ràdio la respon amb el mateix Handler de sempre (mateixa llista blanca).
+# Després la connexió es tanca i la ràdio n'obre una de nova. El panell hi arriba a través
+# de l'agent del core: GET /radios i /radio/<id>/<camí de sempre>.
+#
+# Si la xarxa no hi és (arrencada, cable, DHCP...), la ràdio ho reintenta sola cada pocs
+# segons sense límit. Les connexions en espera es renoven cada minut, així que un canvi
+# d'IP de la ràdio es nota en menys d'un minut.
+ENLLAC_PORT = 9544
+ENLLAC_CONNS = 3          # connexions en espera per ràdio (peticions en paral·lel del panell)
+ENLLAC_EDAT = 60          # el core no fa servir connexions en espera de més de 60 s (les tanca)
+ENLLAC_ESPERA = 90        # la ràdio, si en 90 s no rep res, la tanca i n'obre una altra
+ENLLAC_HOLA = b'agent5g-enllac 1\n'   # el core l'envia quan ha acceptat el certificat de la ràdio
+RADIO_ID_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+ENLLAC_ESTAT = {'core': None, 'connectat': False, 'des_de': None, 'darrer_error': None,
+                'connexions': 0}
+
+
+def _cn(cert):
+    for rdn in (cert or {}).get('subject', ()):
+        for k, v in rdn:
+            if k == 'commonName':
+                return v
+    return None
+
+
+def radio_id(cn):
+    """agent-radio-aula2 -> aula2; agent-radio (certificat antic sense nom) -> radio."""
+    if not cn or not cn.startswith('agent-radio'):
+        return None
+    rid = cn[len('agent-radio'):].lstrip('-') or 'radio'
+    return rid if RADIO_ID_RE.match(rid) else None
+
+
+class Enllac:
+    """Costat core: ràdios connectades i les seves connexions en espera."""
+
+    def __init__(self):
+        self.cond = threading.Condition()
+        self.pool = {}          # id -> [(sslsock, t, ip)]
+        self.info = {}          # id -> {ip, des_de, darrer, cn}
+        self.avisos = {}
+
+    # -- acceptar ràdios
+    def escolta(self, listen, port):
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        ctx.verify_mode = ssl.CERT_REQUIRED      # la ràdio ha de portar certificat de la CA
+        ctx.load_cert_chain(CFG['cert'], CFG['key'])
+        ctx.load_verify_locations(CFG['ca'])
+        while True:
+            try:
+                srv = socket.create_server((listen, port))
+                break
+            except OSError as e:         # p. ex. la xarxa encara no hi és o el port és ocupat
+                print(f'agent5g: no puc escoltar ràdios a {listen}:{port} ({e}); ho reintento', flush=True)
+                time.sleep(10)
+        print(f'agent5g: esperant ràdios a {listen}:{port} (enllaç ràdio -> core)', flush=True)
+        threading.Thread(target=self._neteja, daemon=True).start()
+        while True:
+            try:
+                raw, addr = srv.accept()
+            except OSError:
+                time.sleep(1)
+                continue
+            threading.Thread(target=self._nova, args=(ctx, raw, addr), daemon=True).start()
+
+    def _nova(self, ctx, raw, addr):
+        try:
+            raw.settimeout(10)
+            s = ctx.wrap_socket(raw, server_side=True)
+            cn = _cn(s.getpeercert())
+            rid = radio_id(cn)
+            if not rid:
+                self._avis(addr[0], f'enllaç rebutjat de {addr[0]}: el certificat no és de ràdio (CN={cn})')
+                s.close()
+                return
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            s.sendall(ENLLAC_HOLA)            # la ràdio sap que el core l'ha acceptada
+        except (OSError, ssl.SSLError) as e:
+            raw.close()
+            self._avis(addr[0], f'enllaç fallit de {addr[0]}: {type(e).__name__}: {str(e)[:120]}')
+            return
+        t = time.time()
+        with self.cond:
+            # nova = no la veiem fa més de 15 s (les connexions es renoven cada minut)
+            nou = rid not in self.info or t - self.info[rid].get('darrer', 0) > 15
+            inf = self.info.setdefault(rid, {'des_de': now()})
+            if nou or inf.get('ip') != addr[0]:
+                inf['des_de'] = now()
+                print(f'agent5g: ràdio "{rid}" connectada des de {addr[0]}', flush=True)
+            inf.update(ip=addr[0], darrer=t, cn=cn)
+            lst = self.pool.setdefault(rid, [])
+            lst.append((s, t, addr[0]))
+            while len(lst) > 2 * ENLLAC_CONNS:   # una ràdio no pot acumular connexions
+                lst.pop(0)[0].close()
+            self.cond.notify_all()
+
+    def _avis(self, ip, txt):
+        """El mateix error de la mateixa IP, com a molt un cop cada 5 minuts (la ràdio reintenta)."""
+        ara = time.time()
+        clau = (ip, txt)
+        if ara - self.avisos.get(clau, 0) > 300:
+            self.avisos[clau] = ara
+            print('agent5g: ' + txt, flush=True)
+
+    def _neteja(self):
+        """Tanca les connexions massa velles o que la ràdio ja ha tancat."""
+        import select
+        while True:
+            time.sleep(5)
+            with self.cond:
+                ara = time.time()
+                for rid, lst in self.pool.items():
+                    vives = []
+                    for c in lst:
+                        s, t, _ip = c
+                        try:
+                            tancada = bool(select.select([s], [], [], 0)[0])   # EOF: la ràdio ha tancat
+                        except (OSError, ValueError):
+                            tancada = True
+                        if tancada or ara - t > ENLLAC_EDAT:
+                            try:
+                                s.close()
+                            except OSError:
+                                pass
+                        else:
+                            vives.append(c)
+                    lst[:] = vives
+                    if vives and rid in self.info:     # encara hi és: "vista ara"
+                        self.info[rid]['darrer'] = ara
+
+    def _agafa(self, rid, espera=8.0):
+        fi = time.time() + espera
+        with self.cond:
+            while True:
+                lst = self.pool.get(rid) or []
+                while lst:
+                    s, t, _ip = lst.pop()          # la més nova
+                    if time.time() - t <= ENLLAC_EDAT:
+                        return s
+                    s.close()
+                resta = fi - time.time()
+                if resta <= 0 or rid not in self.info:
+                    return None
+                self.cond.wait(resta)
+
+    def radios(self):
+        ara = time.time()
+        with self.cond:
+            out = []
+            for rid, inf in sorted(self.info.items()):
+                n = len(self.pool.get(rid) or [])
+                connectada = n > 0 or ara - inf.get('darrer', 0) < 15
+                out.append({'id': rid, 'ip': inf.get('ip'), 'connectada': connectada,
+                            'connexions': n, 'des_de': inf.get('des_de'),
+                            'darrer_s': round(ara - inf.get('darrer', ara))})
+            return out
+
+    def peticio(self, rid, method, path, user, body=None, timeout=120):
+        """Envia una petició HTTP a la ràdio per una connexió en espera -> (codi, ctype, cos)."""
+        import http.client
+        if not RADIO_ID_RE.match(rid or '') or rid not in self.info:
+            raise LookupError('ràdio desconeguda')
+        intents = 2 if method == 'GET' else 1
+        for i in range(intents):
+            s = self._agafa(rid)
+            if s is None:
+                raise LookupError('la ràdio no està connectada al core')
+            try:
+                s.settimeout(timeout)
+                cap = (f'{method} {path} HTTP/1.0\r\nHost: radio\r\nX-Panel-User: {user}\r\n'
+                       'Connection: close\r\n')
+                if body is not None:
+                    cap += f'Content-Type: application/json\r\nContent-Length: {len(body)}\r\n'
+                s.sendall(cap.encode('latin-1') + b'\r\n' + (body or b''))
+                r = http.client.HTTPResponse(s)
+                r.begin()
+                dades = r.read(64 * 1024 * 1024)
+                with self.cond:
+                    self.info[rid]['darrer'] = time.time()
+                return r.status, r.getheader('Content-Type', 'application/json'), dades
+            except (OSError, http.client.HTTPException, ssl.SSLError):
+                if i + 1 >= intents:
+                    raise
+            finally:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+
+
+ENLLAC = None
+
+
+def _ctx_cap_al_core():
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.check_hostname = False       # el core s'identifica pel certificat (CN), no per la IP
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.load_verify_locations(CFG['ca'])
+    ctx.load_cert_chain(CFG['cert'], CFG['key'])
+    return ctx
+
+
+class _ServidorFals:
+    """BaseRequestHandler només necessita un objecte 'server'."""
+    server_name = 'agent5g'
+    server_port = 0
+
+
+class HandlerEnllac(Handler):
+    """El mateix Handler, però per una connexió que ha obert la ràdio cap al core: l'altre
+    extrem ja s'ha comprovat (certificat de la CA amb CN agent-core), i és l'agent del core,
+    que només reenvia peticions del panell autenticat."""
+
+    def authorized(self):
+        return 'panel5g-via-core'
+
+    def log_message(self, fmt, *args):
+        sys.stderr.write('%s core %s\n' % (now(), fmt % args))
+
+
+def _enllac_fil(core, port, ctx, n):
+    import select
+    espera, darrer_avis = 2, 0
+    while True:
+        try:
+            raw = socket.create_connection((core, port), timeout=10)
+            raw.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            s = ctx.wrap_socket(raw)
+            cn = _cn(s.getpeercert())
+            if cn != 'agent-core':
+                s.close()
+                raise ssl.SSLError(f'l\'altre extrem no és l\'agent del core (CN={cn})')
+            # Amb TLS 1.3 el core comprova el nostre certificat DESPRÉS del handshake: esperem
+            # la salutació per saber que ens ha acceptat (si no, arriba l'error del certificat).
+            s.settimeout(10)
+            hola = b''
+            while not hola.endswith(b'\n') and len(hola) < 64:
+                b = s.recv(64 - len(hola))
+                if not b:
+                    break
+                hola += b
+            if hola != ENLLAC_HOLA:
+                s.close()
+                raise ConnectionError('el core ha tancat la connexió sense acceptar-nos '
+                                      '(certificat de ràdio antic o d\'una altra CA?)')
+        except (OSError, ssl.SSLError) as e:
+            err = f'{type(e).__name__}: {str(e)[:160]}'
+            if 'certificat' in err.lower() or 'CERT' in err:
+                err += (' (si el certificat és d\'abans de l\'enllaç ràdio->core, torna a '
+                        'emparellar: al core, sudo emparella-radio <nom>)')
+            if n == 0 and (ENLLAC_ESTAT['darrer_error'] != err or time.time() - darrer_avis > 300):
+                darrer_avis = time.time()
+                print(f'agent5g: no puc connectar amb el core {core}:{port}: {err}; '
+                      f'ho torno a provar sol', flush=True)
+            ENLLAC_ESTAT.update(darrer_error=err)
+            if n == 0:
+                ENLLAC_ESTAT['connectat'] = False
+            time.sleep(espera)
+            espera = min(espera * 2, 30)
+            continue
+        espera = 2
+        with LOCK_ENLLAC:
+            if not ENLLAC_ESTAT['connectat']:
+                print(f'agent5g: connectat al core {core}:{port}', flush=True)
+                ENLLAC_ESTAT.update(connectat=True, des_de=now(), darrer_error=None)
+            ENLLAC_ESTAT['connexions'] += 1
+        try:
+            if not s.pending() and not select.select([s], [], [], ENLLAC_ESPERA)[0]:
+                continue                     # cap petició: es renova la connexió
+            HandlerEnllac(s, (core, port), _ServidorFals())
+        except Exception as e:  # noqa: BLE001 - un error en una petició no atura l'enllaç
+            print(f'agent5g: error atenent el core: {type(e).__name__}', flush=True)
+        finally:
+            with LOCK_ENLLAC:
+                ENLLAC_ESTAT['connexions'] -= 1
+            try:
+                s.close()
+            except OSError:
+                pass
+
+
+LOCK_ENLLAC = threading.Lock()
+
+
+def enllac_radio():
+    """Costat ràdio: manté ENLLAC_CONNS connexions obertes cap al core."""
+    core, port = CFG['core'], int(CFG.get('core_port') or ENLLAC_PORT)
+    ENLLAC_ESTAT['core'] = f'{core}:{port}'
+    ctx = _ctx_cap_al_core()
+    print(f'agent5g: enllaç cap al core {core}:{port} (la ràdio truca al core)', flush=True)
+    fils = [threading.Thread(target=_enllac_fil, args=(core, port, ctx, i), daemon=True)
+            for i in range(int(CFG.get('enllac_connexions') or ENLLAC_CONNS))]
+    for f in fils:
+        f.start()
+    return fils
+
+
 def main():
     global CFG
     ap = argparse.ArgumentParser()
@@ -2569,6 +2939,18 @@ def main():
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.load_cert_chain(CFG['cert'], CFG['key'])
     ctx.load_verify_locations(CFG['ca'])
+    global ENLLAC
+    enl = CFG.get('enllac')
+    if enl:                                   # core: rep les ràdios que hi truquen
+        ENLLAC = Enllac()
+        threading.Thread(target=ENLLAC.escolta, daemon=True,
+                         args=(enl.get('listen') or '0.0.0.0', int(enl.get('port') or ENLLAC_PORT))).start()
+    if CFG.get('core'):                       # ràdio: truca al core
+        enllac_radio()
+    if not CFG['listen']:                     # no escolta cap port: només l'enllaç
+        print(f'agent5g ({CFG.get("role")}): sense port d\'escolta, només enllaç amb el core', flush=True)
+        while True:
+            time.sleep(3600)
     listen, auto = CFG['listen'], CFG['listen'] == 'auto'
     if auto:
         listen = ip_lan()

@@ -233,7 +233,7 @@ async def descobreix():
             def_t = ('Ràdio' if h['role'] == 'radio' else 'Core') + f' {ip}'
             AGENTS[nom] = {'url': url, 'rol': h['role'], 'descobert': True, 'ip': ip,
                            'titol': str(h.get('nom') or def_t)[:60]}
-        for nom in [n for n, a in AGENTS.items() if a['descobert'] and n not in trobats]:
+        for nom in [n for n, a in AGENTS.items() if a['descobert'] and not a.get('via') and n not in trobats]:
             _FALLADES[nom] += 1
             if _FALLADES[nom] >= 3:
                 AGENTS.pop(nom, None)
@@ -242,6 +242,61 @@ async def descobreix():
     finally:
         DESC['en_curs'] = False
     return DESC
+
+
+# ---------------------------------------------------------------- ràdios que truquen al core
+# Arquitectura principal: la ràdio truca al core (com la gNodeB a l'AMF). L'agent del core
+# té les ràdios connectades (GET /radios) i hi reenvia les peticions (/radio/<id>/...).
+# Al panell li és igual la IP de la ràdio: només parla amb l'agent del core.
+ENLLAC = {'darrera': None, 'errors': {}}
+_ENLLAC_FALLADES = defaultdict(int)
+
+
+async def radios_enllac():
+    vistes = set()
+    cores = [(t, a) for t, a in list(AGENTS.items()) if a['rol'] == 'core' and not a.get('via')]
+    for t, a in cores:
+        try:
+            r = await agent(t, 'GET', '/radios', 'enllac', timeout=8.0)
+        except HTTPException as e:
+            ENLLAC['errors'][t] = str(e.detail)
+            continue
+        ENLLAC['errors'].pop(t, None)
+        for rd in r.get('radios') or []:
+            rid = str(rd.get('id') or '')
+            if not NAME_RE.match(rid) or not rd.get('connectada'):
+                continue
+            nom = f'radio-{rid}'
+            vistes.add(nom)
+            _ENLLAC_FALLADES.pop(nom, None)
+            ant = AGENTS.get(nom)
+            AGENTS[nom] = {'url': a['url'].rstrip('/') + f'/radio/{rid}', 'rol': 'radio', 'descobert': True,
+                           'via': t, 'ip': rd.get('ip'), 'id': rid, 'des_de': rd.get('des_de'),
+                           'titol': ant['titol'] if ant and ant.get('via') == t else f'Ràdio {rid}'}
+            if not ant or ant.get('via') != t:      # nom visible ("name" de l'agent de la ràdio)
+                try:
+                    h = await agent(nom, 'GET', '/health', 'enllac', timeout=8.0)
+                    if h.get('nom'):
+                        AGENTS[nom]['titol'] = str(h['nom'])[:60]
+                except HTTPException:
+                    pass
+    # una ràdio que ja no hi és desapareix al cap de 2 consultes (uns 20 s)
+    for nom in [n for n, a in AGENTS.items() if a.get('via') and n not in vistes]:
+        _ENLLAC_FALLADES[nom] += 1
+        if _ENLLAC_FALLADES[nom] >= 2:
+            AGENTS.pop(nom, None)
+            _ENLLAC_FALLADES.pop(nom, None)
+    ENLLAC['darrera'] = time.time()
+
+
+async def _bucle_enllac():
+    await asyncio.sleep(1)
+    while True:
+        try:
+            await radios_enllac()
+        except Exception:  # noqa: BLE001 - mai ha de tombar el panell
+            pass
+        await asyncio.sleep(10)
 
 
 async def _bucle_descobriment():
@@ -280,7 +335,10 @@ async def security_headers(request: Request, call_next):
 
 @app.on_event('startup')
 async def _arrenca():
-    if DESC_CFG.get('actiu', True):
+    app.state.enllac = asyncio.create_task(_bucle_enllac())
+    # la cerca per la xarxa (el panell busca agents que escolten) ja no cal amb l'enllaç
+    # ràdio -> core; només si es demana a panel.yaml (descobriment: {actiu: true}).
+    if DESC_CFG.get('actiu', False):
         app.state.desc = asyncio.create_task(_bucle_descobriment())
 
 
@@ -344,13 +402,17 @@ async def me(s=Depends(current_user)):
 @app.get('/api/equips')
 async def equips(s=Depends(current_user)):
     return {'equips': [{'desti': t, 'rol': a['rol'], 'titol': a['titol'], 'descobert': a['descobert'],
-                        'ip': a['ip']} for t, a in AGENTS.items()],
-            'descobriment': {**DESC, 'actiu': bool(DESC_CFG.get('actiu', True))}}
+                        'ip': a['ip'], 'enllac': bool(a.get('via')), 'des_de': a.get('des_de')}
+                       for t, a in AGENTS.items()],
+            'descobriment': {**DESC, 'actiu': bool(DESC_CFG.get('actiu', False))},
+            'enllac': {'darrera': ENLLAC['darrera'], 'errors': ENLLAC['errors']}}
 
 
 @app.post('/api/equips/descobreix')
 async def equips_descobreix(s=Depends(admin)):
-    await descobreix()
+    await radios_enllac()
+    if DESC_CFG.get('actiu', False):
+        await descobreix()
     return await equips(s)
 
 
