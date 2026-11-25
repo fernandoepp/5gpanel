@@ -505,6 +505,20 @@ async def _validate(t, changes, user):
     return vals, res or validate(SCHEMA, rol(t), vals, changes, {})
 
 
+@app.get('/api/radio/bandes')
+async def radio_bandes(s=Depends(current_user)):
+    """Bandes per al selector d'espectre (Paràmetres > Ràdio)."""
+    sch = SCHEMA.get('radio', {})
+    bs = sch.get('bandes') or {}
+    sel = [int(n) for n in (sch.get('espectre') or [28, 40, 77, 78]) if n in bs or str(n) in bs]
+    out = {}
+    for n in sel:
+        b = bs.get(n) or bs.get(str(n))
+        out[n] = {'duplex': b.get('duplex'), 'dl_mhz': b['dl_mhz'], 'ul_mhz': b.get('ul_mhz'),
+                  'scs': b.get('scs'), 'ample_min': b.get('ample_min', 5)}
+    return {'espectre': sel, 'bandes': out}
+
+
 @app.get('/api/radio/calcula')
 async def radio_calcula(freq: float | None = None, arfcn: int | None = None, banda: int | None = None,
                         scs: int | None = None, ample: float | None = None, s=Depends(current_user)):

@@ -88,6 +88,14 @@ En *Paràmetres > Ràdio* hay un campo «Freqüència central (MHz)» que no se 
 - SCS por defecto: 15 kHz en FDD, 30 kHz en TDD. Es editable entre las que admite la banda. Al cambiar de banda vuelve a ser automática.
 - Al validar y guardar se comprueba que el canal entero (frecuencia ± ancho/2) cabe en la banda, la SCS de la banda, el ancho mínimo (n77/n78 10 MHz, n79 40 MHz) y que 5 MHz solo vaya con 15 kHz. Si el ARFCN no cae en el raster de la banda, sale un aviso.
 
+### Selector de espectro
+Encima de la frecuencia hay un selector «Espectre»: botones con las bandas de `radio.espectre` en `schema.yaml`
+(por defecto n28, n40, n77 y n78, con su rango entre paréntesis) y un dibujo de la banda elegida. Al pinchar
+en el dibujo se fija la frecuencia central (limitada para que quepa todo el canal) y se recalculan ARFCN, banda
+y SCS como al escribirla. En FDD (n28) se dibuja también la **subida** aparejada (bajada − 55 MHz): no se
+configura en ningún sitio, el móvil transmite ahí solo. En TDD se indica que subida y bajada usan la misma
+frecuencia. Las bandas FDD de `schema.yaml` llevan ahora `ul_mhz`.
+
 ## Pestaña gNodeB
 
 Una card por cada gNB que se conecta al AMF:

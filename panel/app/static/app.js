@@ -278,6 +278,125 @@ function opcions(k, vals, nota) {
     vals.map(String).includes(v) ? (nota ? nota(v) : v) : `${v} (no vàlid aquí)`)));
 }
 
+// ---- selector d'espectre: tria la banda (n28, n40, n77, n78) i pica la freqüència al dibuix.
+// En FDD (n28) es dibuixa també la pujada aparellada: no es configura, el mòbil hi transmet sol.
+// sv() (SVG) és més avall, amb els gràfics; les declaracions de funció es pugen soles.
+const fmtMhz = (x) => `${+(+x).toFixed(2)}`;
+function muntaEspectre(abans, fi, nomesLectura, triaBanda, recalcula) {
+  const box = el('div', { class: 'espectre' });
+  abans.before(box);
+  const botons = el('div', { class: 'espectre-bandes', role: 'radiogroup', 'aria-label': 'Banda' });
+  const dib = el('div', { class: 'espectre-dib' });
+  const peu = el('p', { class: 'nota' });
+  box.append(el('div', { class: 'espectre-cap' }, el('strong', {}, 'Espectre'),
+    el('span', { class: 'nota' }, ' Tria la banda i pica la freqüència central al dibuix.')), botons, dib, peu);
+  let B = null, darrer = null;
+  api('GET', '/api/radio/bandes').then((d) => {
+    B = d;
+    botons.replaceChildren(...d.espectre.map((n) => {
+      const b = d.bandes[n];
+      const txt = `n${n} (${fmtMhz(b.dl_mhz[0])}–${fmtMhz(b.dl_mhz[1])} MHz · ${b.duplex})`;
+      const bt = el('button', { type: 'button', class: 'pastilla-boto', 'data-banda': n, role: 'radio', disabled: nomesLectura }, txt);
+      bt.addEventListener('click', () => {
+        const [lo, hi] = b.dl_mhz;
+        const ample = parseFloat(campPar('BANDWIDTH_MHZ')?.value) || 0;
+        const f = parseFloat(fi.value);
+        triaBanda(n);
+        // si la freqüència actual no hi cap, al mig de la banda
+        if (!(f - ample / 2 >= lo && f + ample / 2 <= hi)) fi.value = fmtMhz((lo + hi) / 2);
+        recalcula();
+      });
+      return bt;
+    }));
+    if (darrer) dibuixa(darrer);
+  }).catch(() => box.remove());
+
+  function dibuixa(r) {
+    darrer = r;
+    if (!B) return;
+    botons.querySelectorAll('button').forEach((bt) => bt.setAttribute('aria-checked', String(+bt.dataset.banda === r.banda)));
+    const b = B.bandes[r.banda];
+    if (!b) {
+      dib.replaceChildren(); peu.textContent = `n${r.banda} no és al selector (${B.espectre.map((n) => 'n' + n).join(', ')}).`;
+      return;
+    }
+    const ample = parseFloat(campPar('BANDWIDTH_MHZ')?.value) || 0;
+    const [dlo, dhi] = b.dl_mhz, ul = b.ul_mhz;
+    const xmin = Math.min(dlo, ul ? ul[0] : dlo), xmax = Math.max(dhi, ul ? ul[1] : dhi);
+    const pad = (xmax - xmin) * 0.04;
+    const a0 = xmin - pad, a1 = xmax + pad, W = 800, H = 118, M = 14;
+    const X = (f) => M + (f - a0) / (a1 - a0) * (W - 2 * M);
+    const F = (x) => a0 + (x - M) / (W - 2 * M) * (a1 - a0);
+    const svg = sv('svg', { viewBox: `0 0 ${W} ${H}`, class: 'espectre-svg', role: 'img',
+      'aria-label': `Banda n${r.banda}, canal a ${fmtMhz(r.freq_real_mhz)} MHz` });
+    const yB = 30, hB = 44;
+    // eix i marques
+    const rang = a1 - a0, pasos = [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500];
+    const step = pasos.find((p) => rang / p <= 9) || 500;
+    svg.append(sv('line', { x1: M, x2: W - M, y1: yB + hB + 8, y2: yB + hB + 8, class: 'eix' }));
+    for (let t = Math.ceil(a0 / step) * step; t <= a1; t += step) {
+      svg.append(sv('line', { x1: X(t), x2: X(t), y1: yB + hB + 5, y2: yB + hB + 11, class: 'eix' }),
+        sv('text', { x: X(t), y: yB + hB + 25, class: 'eix-txt', 'text-anchor': 'middle' }, `${t}`));
+    }
+    svg.append(sv('text', { x: W - M, y: H - 2, class: 'eix-txt', 'text-anchor': 'end' }, 'MHz'));
+    // bandes
+    const zona = (lo, hi, cls, etiqueta) => {
+      svg.append(sv('rect', { x: X(lo), y: yB, width: X(hi) - X(lo), height: hB, rx: 4, class: cls }),
+        sv('text', { x: (X(lo) + X(hi)) / 2, y: yB - 8, class: 'zona-txt', 'text-anchor': 'middle' }, etiqueta));
+    };
+    if (ul) {
+      zona(ul[0], ul[1], 'zona-ul', `Pujada (UL) ${ul[0]}–${ul[1]}`);
+      zona(dlo, dhi, 'zona-dl', `Baixada (DL) ${dlo}–${dhi} · pica aquí`);
+    } else {
+      zona(dlo, dhi, 'zona-dl', `n${r.banda} TDD ${dlo}–${dhi} (baixada i pujada a la mateixa freqüència) · pica aquí`);
+    }
+    // canals
+    const canal = (fc, cls, txt) => {
+      const x0 = X(fc - ample / 2), x1 = X(fc + ample / 2);
+      svg.append(sv('rect', { x: x0, y: yB + 4, width: Math.max(2, x1 - x0), height: hB - 8, rx: 3, class: cls }),
+        sv('line', { x1: X(fc), x2: X(fc), y1: yB, y2: yB + hB, class: cls + '-mig' }),
+        x1 - x0 >= 58   // si el canal és estret (n77/n78), l'etiqueta va al costat
+          ? sv('text', { x: X(fc), y: yB + hB / 2 + 4, class: 'canal-txt', 'text-anchor': 'middle' }, txt)
+          : sv('text', { x: x1 + 5, y: yB + hB / 2 + 4, class: 'canal-txt fora' }, `${txt} MHz`));
+    };
+    const fc = r.freq_real_mhz;
+    canal(fc, 'canal-dl', fmtMhz(fc));
+    if (r.ul) canal(r.ul.freq_mhz, 'canal-ul', fmtMhz(r.ul.freq_mhz));
+    // cursor i clic: la freqüència es limita perquè hi càpiga tot el canal
+    const guia = sv('line', { y1: yB - 2, y2: yB + hB + 2, class: 'guia', visibility: 'hidden' });
+    const guiaTxt = sv('text', { y: yB + hB + 38, class: 'eix-txt guia-txt', 'text-anchor': 'middle', visibility: 'hidden' });
+    svg.append(guia, guiaTxt);
+    const clampF = (f) => Math.min(dhi - ample / 2, Math.max(dlo + ample / 2, f));
+    const deEvent = (ev) => {
+      const pt = svg.getBoundingClientRect();
+      return F((ev.clientX - pt.left) / pt.width * W);
+    };
+    if (!nomesLectura) {
+      const hit = sv('rect', { x: X(dlo), y: yB - 4, width: X(dhi) - X(dlo), height: hB + 8, class: 'hit' });
+      hit.addEventListener('pointermove', (ev) => {
+        const f = clampF(deEvent(ev));
+        for (const n of [guia]) { n.setAttribute('x1', X(f)); n.setAttribute('x2', X(f)); n.setAttribute('visibility', 'visible'); }
+        guiaTxt.setAttribute('x', X(f)); guiaTxt.setAttribute('visibility', 'visible');
+        guiaTxt.textContent = `${fmtMhz(f)} MHz` + (ul ? ` (UL ${fmtMhz(f - (dlo - ul[0]))})` : '');
+      });
+      hit.addEventListener('pointerleave', () => { guia.setAttribute('visibility', 'hidden'); guiaTxt.setAttribute('visibility', 'hidden'); });
+      hit.addEventListener('click', (ev) => {
+        fi.value = fmtMhz(Math.round(clampF(deEvent(ev)) * 10) / 10);
+        fi.dispatchEvent(new Event('input'));
+        recalcula();
+      });
+      svg.append(hit);
+    }
+    dib.replaceChildren(svg);
+    peu.textContent = r.ul
+      ? `Baixada ${fmtMhz(fc)} MHz (${fmtMhz(fc - ample / 2)}–${fmtMhz(fc + ample / 2)}) · pujada ${fmtMhz(r.ul.freq_mhz)} MHz ` +
+        `(${fmtMhz(r.ul.freq_mhz - ample / 2)}–${fmtMhz(r.ul.freq_mhz + ample / 2)}). La pujada no es configura: és la baixada menys ` +
+        `${r.ul.separacio_mhz} MHz (separació dúplex de n${r.banda}) i el mòbil hi transmet sol.`
+      : `Canal ${fmtMhz(fc - ample / 2)}–${fmtMhz(fc + ample / 2)} MHz. En TDD la pujada i la baixada fan servir aquesta mateixa freqüència, alternant en el temps (patró TDD).`;
+  }
+  return { dibuixa };
+}
+
 function muntaFreq(f) {
   const arf = campPar('DL_ARFCN');
   if (!arf) return;
@@ -288,6 +407,10 @@ function muntaFreq(f) {
   const err = el('span', { class: 'camp-error' });
   const lab = el('label', { 'data-clau': '_FREQ', class: 'freq' }, 'Freqüència central (MHz)', fi, info, err);
   arf.parentElement.before(lab);
+  const esp = muntaEspectre(lab, fi, arf.disabled, (banda) => {
+    bandaManual = true; scsManual = false;
+    posa('BAND', banda);
+  }, () => calcula('freq'));
 
   // La banda i la SCS es proposen soles; només es respecten si les has triat a mà
   // (o, en carregar, les que ja hi ha al .env). Canviar la banda torna la SCS a automàtica.
@@ -316,6 +439,7 @@ function muntaFreq(f) {
     const sr = campPar('SRATE');
     if (sr && r.srate_suggerida && parseFloat(sr.value) + 1e-9 < r.srate_suggerida) posa('SRATE', r.srate_suggerida);
     const ajust = Math.abs(r.freq_real_mhz - r.freq_mhz) > 1e-6 ? ` (ajustada al raster: ${r.freq_real_mhz} MHz)` : '';
+    esp.dibuixa(r);
     info.textContent = `ARFCN ${r.arfcn}${ajust} · n${r.banda} ${r.duplex} ${r.rang_mhz[0]}–${r.rang_mhz[1]} MHz` +
       (r.bandes.length > 1 ? ` · també cau a ${r.bandes.filter((b) => b !== r.banda).map((b) => `n${b}`).join(', ')}` : '') +
       ` · SCS ${r.scs} kHz` + ((r.avisos || []).length ? ` · ${r.avisos.join(' ')}` : '');

@@ -225,3 +225,24 @@ td.mono, .mono { font-family: ui-monospace, monospace; }
 input.w4 { width: 4em; } input.w6 { width: 6em; }
 #error-global { position: relative; z-index: 5; background: #b00020; color: #fff; padding: 10px 14px; font-size: 14px; white-space: pre-wrap; }
 input.w9 { width: 9em; }
+
+/* ---- selector d'espectre (Paràmetres > Ràdio) */
+#form-par .espectre { grid-column: 1 / -1; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--soft); }
+.espectre-bandes { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 8px; }
+.pastilla-boto { border: 1px solid var(--line); background: var(--card-solid); color: var(--fg); border-radius: 999px;
+  padding: 5px 12px; font: inherit; font-size: 13px; cursor: pointer; }
+.pastilla-boto[aria-checked="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.pastilla-boto:disabled { cursor: default; opacity: .7; }
+.espectre-svg { width: 100%; height: auto; display: block; touch-action: none; }
+.espectre-svg .eix { stroke: var(--muted); stroke-width: 1; }
+.espectre-svg .eix-txt { fill: var(--muted); font-size: 11px; }
+.espectre-svg .zona-txt { fill: var(--fg); font-size: 11.5px; }
+.espectre-svg .zona-dl { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1; }
+.espectre-svg .zona-ul { fill: var(--soft); stroke: var(--serie-1); stroke-width: 1; stroke-dasharray: 4 3; }
+.espectre-svg .canal-dl { fill: var(--accent); opacity: .85; }
+.espectre-svg .canal-ul { fill: var(--serie-1); opacity: .8; }
+.espectre-svg .canal-dl-mig, .espectre-svg .canal-ul-mig { stroke: var(--fg); stroke-width: 1; opacity: .5; }
+.espectre-svg .canal-txt { fill: var(--accent-fg); font-size: 11px; font-weight: 600; pointer-events: none; }
+.espectre-svg .guia { stroke: var(--fg); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.espectre-svg .hit { fill: transparent; cursor: crosshair; }
+.espectre-svg .canal-txt.fora { fill: var(--fg); }

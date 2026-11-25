@@ -19,25 +19,29 @@ radio:
   # del raster de canal en ARFCN (100 kHz -> 20; 15 kHz -> 1 amb SCS 15 i 2 amb SCS 30).
   # El panell calcula DL_ARFCN, BAND i SCS a partir de la freqüència central.
   bandes:
-    1:  {duplex: FDD, dl_mhz: [2110, 2170], scs: [15, 30], pas: 20}
-    2:  {duplex: FDD, dl_mhz: [1930, 1990], scs: [15, 30], pas: 20}
-    3:  {duplex: FDD, dl_mhz: [1805, 1880], scs: [15, 30], pas: 20}
-    5:  {duplex: FDD, dl_mhz: [869, 894],   scs: [15, 30], pas: 20}
-    7:  {duplex: FDD, dl_mhz: [2620, 2690], scs: [15, 30], pas: 20}
-    8:  {duplex: FDD, dl_mhz: [925, 960],   scs: [15, 30], pas: 20}
-    20: {duplex: FDD, dl_mhz: [791, 821],   scs: [15, 30], pas: 20}
-    25: {duplex: FDD, dl_mhz: [1930, 1995], scs: [15, 30], pas: 20}
-    28: {duplex: FDD, dl_mhz: [758, 803],   scs: [15, 30], pas: 20}
+    1:  {duplex: FDD, dl_mhz: [2110, 2170], ul_mhz: [1920, 1980], scs: [15, 30], pas: 20}
+    2:  {duplex: FDD, dl_mhz: [1930, 1990], ul_mhz: [1850, 1910], scs: [15, 30], pas: 20}
+    3:  {duplex: FDD, dl_mhz: [1805, 1880], ul_mhz: [1710, 1785], scs: [15, 30], pas: 20}
+    5:  {duplex: FDD, dl_mhz: [869, 894], ul_mhz: [824, 849],   scs: [15, 30], pas: 20}
+    7:  {duplex: FDD, dl_mhz: [2620, 2690], ul_mhz: [2500, 2570], scs: [15, 30], pas: 20}
+    8:  {duplex: FDD, dl_mhz: [925, 960], ul_mhz: [880, 915],   scs: [15, 30], pas: 20}
+    20: {duplex: FDD, dl_mhz: [791, 821], ul_mhz: [832, 862],   scs: [15, 30], pas: 20}
+    25: {duplex: FDD, dl_mhz: [1930, 1995], ul_mhz: [1850, 1915], scs: [15, 30], pas: 20}
+    28: {duplex: FDD, dl_mhz: [758, 803], ul_mhz: [703, 748],   scs: [15, 30], pas: 20}
     38: {duplex: TDD, dl_mhz: [2570, 2620], scs: [15, 30], pas: 20}
     40: {duplex: TDD, dl_mhz: [2300, 2400], scs: [15, 30], pas: 20}
     41: {duplex: TDD, dl_mhz: [2496, 2690], scs: [15, 30], pas: {15: 3, 30: 6}, ample_min: 10}
     48: {duplex: TDD, dl_mhz: [3550, 3700], scs: [15, 30], pas: {15: 1, 30: 2}}
-    65: {duplex: FDD, dl_mhz: [2110, 2200], scs: [15, 30], pas: 20}
-    66: {duplex: FDD, dl_mhz: [2110, 2200], scs: [15, 30], pas: 20}
-    71: {duplex: FDD, dl_mhz: [617, 652],   scs: [15, 30], pas: 20}
+    65: {duplex: FDD, dl_mhz: [2110, 2200], ul_mhz: [1920, 2010], scs: [15, 30], pas: 20}
+    66: {duplex: FDD, dl_mhz: [2110, 2200], ul_mhz: [1710, 1780], scs: [15, 30], pas: 20}
+    71: {duplex: FDD, dl_mhz: [617, 652], ul_mhz: [663, 698],   scs: [15, 30], pas: 20}
     77: {duplex: TDD, dl_mhz: [3300, 4200], scs: [15, 30], pas: {15: 1, 30: 2}, ample_min: 10}
     78: {duplex: TDD, dl_mhz: [3300, 3800], scs: [15, 30], pas: {15: 1, 30: 2}, ample_min: 10}
     79: {duplex: TDD, dl_mhz: [4400, 5000], scs: [30],     pas: {30: 2},        ample_min: 40}
+  # FDD: ul_mhz = rang de PUJADA. No es configura enlloc: el mòbil transmet a la freqüència
+  # de pujada aparellada (DL - separació dúplex de la banda). El panell la dibuixa.
+  # Bandes que surten al selector d'espectre de Paràmetres > Ràdio:
+  espectre: [28, 40, 77, 78]
   # Quan una freqüència cau en bandes solapades, es proposa la primera d'aquesta llista
   # (sempre es pot canviar a mà entre les que la contenen).
   prioritat: [78, 77, 1, 3, 7, 38, 41, 40, 28, 20, 8, 79, 48, 65, 66, 2, 25, 5, 71]
