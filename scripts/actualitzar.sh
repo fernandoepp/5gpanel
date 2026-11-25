@@ -53,11 +53,18 @@ fi
 #  - eines d'emparellament noves (emparella-radio <nom>; el codi porta la IP del core)
 #  - la ràdio fixa de panel.yaml (agents.radio amb la IP de la ràdio) es comenta: la ràdio
 #    apareix sola quan truca al core (a la ràdio: sudo bash scripts/enllaca_radio.sh codi.txt)
-if [[ -d /opt/agent5g/eines ]]; then
-  CERTS_EINES=$(sed -n 's#^CERTS=\${2:-\(.*\)}$#\1#p' /opt/agent5g/eines/emparella_radio.sh 2>/dev/null | head -1)
+CERTS_EINES=$(sed -n 's#^CERTS=\${2:-\(.*\)}$#\1#p' /opt/agent5g/eines/emparella_radio.sh 2>/dev/null | head -1)
+if [[ -z $CERTS_EINES ]]; then                 # instal·lacions antigues: on és la CA?
+  for c in /root/certs-5g /opt/panel5g/certs-5g; do [[ -f $c/ca/ca.key ]] && { CERTS_EINES=$c; break; }; done
+fi
+if [[ -n $CERTS_EINES ]]; then
+  install -d -m 755 /opt/agent5g/eines
   install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
   [[ -n $CERTS_EINES ]] && sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS_EINES}#" /opt/agent5g/eines/emparella_radio.sh
   ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
+  echo ">> emparella-radio <nom> instal·lat (CA a $CERTS_EINES)"
+else
+  echo ">> AVÍS: no trobo la CA (ca/ca.key): emparella_radio.sh <nom> <carpeta_certs> a mà"
 fi
 [[ -s /etc/agent5g/core_ip ]] || printf '%s\n' "$PANEL_IP" > /etc/agent5g/core_ip
 cp -a "$PANEL_DIR/config/panel.yaml" "$BK/"
