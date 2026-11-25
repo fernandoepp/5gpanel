@@ -53,7 +53,7 @@ fi
 #  - eines d'emparellament noves (emparella-radio <nom>; el codi porta la IP del core)
 #  - la ràdio fixa de panel.yaml (agents.radio amb la IP de la ràdio) es comenta: la ràdio
 #    apareix sola quan truca al core (a la ràdio: sudo bash scripts/enllaca_radio.sh codi.txt)
-CERTS_EINES=$(sed -n 's#^CERTS=\${2:-\(.*\)}$#\1#p' /opt/agent5g/eines/emparella_radio.sh 2>/dev/null | head -1)
+CERTS_EINES=$(sed -n 's#^CERTS=\${2:-\(.*\)}$#\1#p' /opt/agent5g/eines/emparella_radio.sh 2>/dev/null | head -1 || true)
 if [[ -z $CERTS_EINES ]]; then                 # instal·lacions antigues: on és la CA?
   for c in /root/certs-5g /opt/panel5g/certs-5g; do [[ -f $c/ca/ca.key ]] && { CERTS_EINES=$c; break; }; done
 fi
