@@ -66,3 +66,5 @@ core:
     MNC:              {tipus: str, regex: "^[0-9]{2,3}$", etiqueta: "Codi de xarxa (MNC)"}
     DOCKER_HOST_IP:   {tipus: ipv4, etiqueta: "IP del core (host)"}
     UPF_ADVERTISE_IP: {tipus: ipv4, etiqueta: "IP anunciada per l'UPF (N3)"}
+    # amf.yaml (tai): un TAC o diversos separats per comes (un per gNB si en tenen de diferents)
+    TAC:              {tipus: str, regex: "^[0-9]{1,8}(,[0-9]{1,8}){0,15}$", etiqueta: "Codis d'àrea acceptats (TAC, separats per comes)"}

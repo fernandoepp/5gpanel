@@ -99,6 +99,16 @@ Una card por cada gNB que se conecta al AMF:
 
 La pestaña la ve también el rol `lector`, pero sin los IMSI.
 
+## TAC del core (amf.yaml)
+En *Paràmetres > Core*, «Codis d'àrea acceptats (TAC)»: uno o varios separados por comas (`1` o `1,2,7`, uno
+por gNodeB si tienen TAC distintos). Al guardar, el agente deja el core preparado para leerlo del `.env`:
+- `amf/amf.yaml`: cada `tac:` de la lista `tai` pasa a `tac: [TAC]` (antes podía ser `tac: TAC` o un número escrito a mano).
+- `amf/amf_init.sh`: si no tiene el `sed` de `TAC`, se añade justo después del `cp`, entre marcas `# >>> panel5g: TAC`.
+- `.env`: `TAC=…` (si no existía, se añade debajo de `MNC`).
+Copia de los tres ficheros antes de tocarlos. Queda pendiente recrear `amf` (botón **Aplicar**).
+Si el `.env` no tenía `TAC`, el panel muestra el número que había escrito en `amf.yaml`.
+La validación avisa si el TAC de algún gNB no está en la lista del core (el AMF lo rechazaría con «Cannot find Served TAI»).
+
 ## Patrón TDD (radio, ocudu)
 
 En *Paràmetres > Ràdio*, la tarjeta «Patró TDD» activa o desactiva el patrón del capítulo 7.

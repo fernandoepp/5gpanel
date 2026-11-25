@@ -106,6 +106,8 @@ def load_config(path):
         cfg.setdefault('enllac', {'listen': '0.0.0.0', 'port': 9544})
     if not cfg['listen'] and not cfg.get('core') and not cfg.get('enllac'):
         sys.exit('config: cal "listen" (escoltar el panell) o "core" (IP del core, enllaç ràdio -> core)')
+    if cfg.get('role') == 'core':            # TAC del core (amf.yaml): un o diversos, separats per comes
+        cfg['editable_keys'].setdefault('TAC', TAC_RE_TXT)
     cfg['_editable'] = {k: re.compile(v) for k, v in cfg['editable_keys'].items()}
     # contenidors IMS: es poden veure (estat i logs) si la VoIP és permesa en aquest equip
     v = cfg.get('voip') or {}
@@ -138,6 +140,10 @@ def public_env():
     for k, v in env.items():
         hidden = SECRET_RE.search(k) and k not in CFG['_editable']
         res[k] = {'value': '***' if hidden else v, 'editable': k in CFG['_editable']}
+    if CFG.get('role') == 'core' and 'TAC' not in res and 'TAC' in CFG['_editable']:
+        # el .env no el té: el valor és el que hi ha escrit a amf.yaml (si és un número)
+        lit = tac_amf_literal()
+        res['TAC'] = {'value': lit or '', 'editable': True, 'font': 'amf.yaml'}
     return res
 
 
@@ -211,8 +217,18 @@ def write_env(changes):
             lines[i] = f'{m.group(1)}{k}{m.group(3)}{changes[k]}{m.group(5)}'
             seen.add(k)
     missing = set(changes) - seen
+    tac_core = CFG.get('role') == 'core' and 'TAC' in changes
+    if tac_core and 'TAC' in missing:            # .env sense TAC (instal·lacions antigues): s'afegeix
+        lines = env_set_managed(lines, {'TAC': changes['TAC']}, TAC_ENV_COMMENT, ('MNC', 'MCC'))
+        old['TAC'] = tac_amf_literal()
+        missing.discard('TAC')
     if missing:
         raise ValueError(f'claus inexistents al .env: {sorted(missing)}')
+    if tac_core:
+        files = tac_amf_fitxers()                # amf.yaml (tac: [TAC]) i amf_init.sh (sed de TAC)
+        files[CFG['_env_path']] = lines
+        baks = _commit(files)
+        return baks.get(os.path.basename(CFG['_env_path'])), old
     bak = backup_env()
     atomic_write(CFG['_env_path'], '\n'.join(lines))
     return bak, old
@@ -505,6 +521,55 @@ def _commit(files):
     for path, lines in files.items():
         atomic_write(path, '\n'.join(lines))
     return baks
+
+
+# ---------------------------------------------------------------- TAC del core (amf.yaml)
+# A docker_open5gs l'AMF llegeix el TAC de amf/amf.yaml (llista "tai"). La versió actual hi
+# té "tac: TAC" i amf_init.sh el substitueix pel TAC del .env; versions antigues hi tenen el
+# número escrit i/o no tenen TAC al .env. En desar el TAC des del panell es deixa sempre així:
+#   amf.yaml      tac: [TAC]          (llista: admet un TAC o diversos, "1,2,3", un per gNB)
+#   amf_init.sh   sed -i 's|TAC|'$TAC'|g' ...   (s'afegeix entre marques si no hi és)
+#   .env          TAC=1  o  TAC=1,2
+# i cal recrear l'AMF. El TAC és de 24 bits (0-16777215).
+TAC_RE_TXT = r'^[0-9]{1,8}(,[0-9]{1,8}){0,15}$'
+TAC_ID = 'TAC'
+TAC_ENV_COMMENT = '# TAC de l\'AMF (panel5g)'
+TAC_LINE = re.compile(r'^(\s*)tac:\s*(TAC|\[\s*TAC\s*\]|\[?\s*[0-9]+(\s*,\s*[0-9]+)*\s*\]?)\s*(#.*)?$')
+
+
+def _amf_paths():
+    pd = CFG['project_dir']
+    return os.path.join(pd, 'amf', 'amf.yaml'), os.path.join(pd, 'amf', 'amf_init.sh')
+
+
+def tac_amf_literal():
+    """TAC escrit a mà a amf.yaml (p. ex. "1" o "1,2"), o None si fa servir TAC del .env."""
+    try:
+        lines = _read_lines(_amf_paths()[0])
+    except OSError:
+        return None
+    for l in lines:
+        m = TAC_LINE.match(l)
+        if m and 'TAC' not in m.group(2):
+            return re.sub(r'[\s\[\]]', '', m.group(2))
+    return None
+
+
+def tac_amf_fitxers():
+    """Línies noves de amf.yaml i amf_init.sh perquè l'AMF agafi el TAC del .env."""
+    yml, init = _amf_paths()
+    out = {}
+    a = _read_lines(yml)
+    n = [TAC_LINE.sub(lambda m: f'{m.group(1)}tac: [TAC]', l) for l in a]
+    if not any(TAC_LINE.match(l) for l in a):
+        raise ValueError('no trobo cap "tac:" a amf/amf.yaml')
+    if n != a:
+        out[yml] = n
+    i = _read_lines(init)
+    if not any(re.match(r"^\s*sed -i 's\|TAC\|'\$TAC'\|g'", l) for l in i):
+        out[init] = insert_after(i, r'^cp /mnt/amf/amf\.yaml', [
+            "sed -i 's|TAC|'$TAC'|g' install/etc/open5gs/amf.yaml"], TAC_ID)
+    return out
 
 
 # ---------------------------------------------------------------- diversos PLMN
