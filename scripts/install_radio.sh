@@ -378,6 +378,8 @@ PY
     sleep 4
     if systemctl is-active -q agent5g; then
         info "agent5g actiu (s'inicia sol en arrencar i es reinicia sempre): truca al core $CORE_ENLLAC"
+        info "certificats d'aquesta ràdio: /etc/agent5g/certs/ (ca.crt, agent-radio.crt, agent-radio.key)"
+        info "configuració de l'agent:     /etc/agent5g/agent5g.json   ·  registre: journalctl -u agent5g"
         if journalctl -u agent5g --since "-20s" --no-pager 2>/dev/null | grep -q "connectat al core"; then
             info "connectat al core: la ràdio \"$NOM_RADIO\" ja surt al panell"
         else

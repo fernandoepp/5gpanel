@@ -116,6 +116,8 @@ info "$CERTS/ca/ca.key és la clau de la CA: no la copiïs enlloc (emparella-rad
 
 # ---- 5. codi d'emparellament de les ràdios
 RADIOS=${CORE5G_RADIOS:-}
+# core5g.sh ho fa ell al final de tot (CORE5G_EMPARELLAR_DESPRES=1), quan el panell ja és en marxa
+[[ ${CORE5G_EMPARELLAR_DESPRES:-0} == 1 ]] && exit 0
 if [[ -z $RADIOS && -t 0 ]]; then
   read -r -p "    Nom de la ràdio (o ràdios, separats per espais; p. ex. aula1) a emparellar ara [buit = més tard]: " RADIOS || RADIOS=""
 fi

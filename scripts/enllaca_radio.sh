@@ -57,6 +57,7 @@ for _ in $(seq 1 10); do
 done
 if journalctl -u agent5g --since "-30s" --no-pager 2>/dev/null | grep -q "connectat al core"; then
   echo ">> Fet. La ràdio \"$NOM\" truca al core $CORE i ja surt al panell (còpia: $BK)."
+  echo "   Certificats: /etc/agent5g/certs/ · configuració: /etc/agent5g/agent5g.json"
 else
   echo ">> L'agent encara no ha pogut connectar amb el core $CORE (ho reintenta sol cada pocs segons)."
   echo "   Comprova que el core té l'agent nou (escolta al 9544) i mira: journalctl -u agent5g -n 20"
