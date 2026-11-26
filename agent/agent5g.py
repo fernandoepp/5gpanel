@@ -116,6 +116,10 @@ def load_config(path):
         sys.exit('config: cal "listen" (escoltar el panell) o "core" (IP del core, enllaç ràdio -> core)')
     if cfg.get('role') == 'core':            # TAC del core (amf.yaml): un o diversos, separats per comes
         cfg['editable_keys'].setdefault('TAC', TAC_RE_TXT)
+        # La IP del core només es canvia per terminal (sudo agent5g): regenera certificats,
+        # codis d'emparellament i reinicia el core i el panell. Des del panell, només lectura.
+        for k in ('DOCKER_HOST_IP', 'UPF_ADVERTISE_IP'):
+            cfg['editable_keys'].pop(k, None)
     cfg['_editable'] = {k: re.compile(v) for k, v in cfg['editable_keys'].items()}
     # contenidors IMS: es poden veure (estat i logs) si la VoIP és permesa en aquest equip
     v = cfg.get('voip') or {}

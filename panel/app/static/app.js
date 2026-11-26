@@ -2,7 +2,7 @@
 // Tot el contingut que ve dels agents (logs, valors) s'insereix amb textContent.
 
 const $ = (s) => document.querySelector(s);
-const VERSIO = 'v17';
+const VERSIO = 'v18';
 function mostraError(txt) {
   let d = document.getElementById('error-global');
   if (!d) { d = document.createElement('div'); d.id = 'error-global'; document.body.prepend(d); }
@@ -239,11 +239,14 @@ async function carregaParametres() {
   const f = $('#form-par'); f.replaceChildren();
   for (const c of PAR.camps) {
     const i = input(c);
-    const usable = admin && c.existeix && c.editable_agent;
+    const usable = admin && c.existeix && c.editable_agent && !c.nomes_cli;
     i.disabled = !usable;
     i.addEventListener('input', () => i.parentElement.classList.toggle('canviat', String(i.value) !== String(c.valor ?? '')));
-    const nota = !c.existeix ? 'no definit en aquest equip' : (!c.editable_agent ? 'només lectura en aquest equip' : '');
-    f.append(el('label', { 'data-clau': c.clau }, c.etiqueta || c.clau, i,
+    const nota = !c.existeix ? 'no definit en aquest equip'
+      : c.nomes_cli ? 'només lectura: es canvia per terminal (sudo agent5g)'
+      : (!c.editable_agent ? 'només lectura en aquest equip' : '');
+    // l'avís surt en passar el ratolí per sobre (al label: un input desactivat no sempre el mostra)
+    f.append(el('label', { 'data-clau': c.clau, ...(c.nomes_cli ? { title: c.nomes_cli, class: 'nomes-cli' } : {}) }, c.etiqueta || c.clau, i,
                 el('span', { class: 'camp-error' }), nota ? el('span', { class: 'nota' }, nota) : null));
   }
   if (PAR.camps.some((c) => c.clau === 'DL_ARFCN')) muntaFreq(f);

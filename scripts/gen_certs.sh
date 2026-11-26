@@ -9,6 +9,8 @@
 #   (fa servir la CA que ja hi ha a <sortida>/ca; no en crea cap de nova)
 # PCs amb UPF separat (ho fa emparella_upf.sh, al core):
 #   ./gen_certs.sh --upf <nom_upf> [carpeta_sortida]           -> <sortida>/agent-upf-<nom>/
+# IP nova del core (ho fa el menú "sudo agent5g"): renova agent-core i el web del panell
+#   ./gen_certs.sh --renova <IP_nova_core> [carpeta_sortida]
 # Només core + panell (sense ràdio; les ràdios s'afegeixen després amb --radio):
 #   ./gen_certs.sh --core <IP_core> [carpeta_sortida]
 # Resultat:
@@ -29,6 +31,12 @@ elif [[ ${1:-} == --upf ]]; then
   [[ $UPF_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nom de UPF invàlid: $UPF_NOM (lletres, xifres, . _ -)"; exit 1; }
   [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
   NOMES_RADIO=2
+elif [[ ${1:-} == --renova ]]; then
+  # IP nova del core: es tornen a emetre el certificat de l'agent del core i el web del panell
+  # amb la mateixa CA (ràdios, UPF i navegadors que ja confien en la CA no s'han de tocar)
+  CORE_IP=${2:?IP nova del core}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
+  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
+  NOMES_RADIO=3
 elif [[ ${1:-} == --core ]]; then
   NOMES_RADIO=0; CORE_IP=${2:?IP del core}; RADIO_IP=""; OUT=${3:-./certs-5g}
 else
@@ -73,6 +81,13 @@ emet() {
 }
 
 LOCAL="DNS:host.docker.internal,IP:172.17.0.1,IP:127.0.0.1"
+if [[ $NOMES_RADIO == 3 ]]; then
+  mkdir -p "$OUT/agent-core" "$OUT/panel"
+  emet agent-core    agent-core  serverAuth "IP:$CORE_IP,$LOCAL" "$OUT/agent-core"
+  emet panel5g-web   panel5g-web serverAuth "IP:$CORE_IP,DNS:localhost,IP:127.0.0.1" "$OUT/panel"
+  echo "Certificats de l'agent del core i del web del panell renovats per a $CORE_IP (mateixa CA)"
+  exit 0
+fi
 if [[ $NOMES_RADIO == 2 ]]; then
   # PC amb UPF: com la ràdio, truca al core (client TLS) i s'identifica pel CN agent-upf-<nom>
   D="$OUT/agent-upf-$UPF_NOM"; mkdir -p "$D"

@@ -76,7 +76,7 @@ El modelo sale de los 8 primeros dígitos del IMEI (TAC). Primero se mira `confi
 - Los agentes se identifican por el certificado (firmado por nuestra CA y con CN `agent-core` o `agent-radio*`), no por la IP: si la IP cambia no hace falta volver a emitir certificados.
 - El agente de radio con `"listen": "auto"` escucha en la IP de la LAN que tenga en cada momento y se reinicia solo si el DHCP la cambia. Si la IP configurada ya no existe, usa la actual en lugar de reiniciarse en bucle.
 - Con el enlace radio → core, el cambio de IP de la radio no afecta al panel. Lo único que tiene que ser fijo es la IP del core (resérvala en el router).
-- `scripts/canviar_xarxa.sh core <IP_radio>` (en el core) y `scripts/canviar_xarxa.sh radio <IP_core>` (en la radio) cambian las IPs viejas por las nuevas en `.env`, `sa-deploy.yaml`, `smf.yaml`, `panel.yaml`, `upf_remot/.env` y el `.env` de ocudu, con copia de cada fichero, y recrean el SMF, el panel, la UPF y la gNB. Con `-n` solo muestra lo que cambiaría.
+- Para la IP del core usa `sudo agent5g` (ver más abajo): también renueva los certificados. `scripts/canviar_xarxa.sh core <IP_radio>` (en el core) y `scripts/canviar_xarxa.sh radio <IP_core>` (en la radio) cambian las IPs viejas por las nuevas en `.env`, `sa-deploy.yaml`, `smf.yaml`, `panel.yaml`, `upf_remot/.env` y el `.env` de ocudu, con copia de cada fichero, y recrean el SMF, el panel, la UPF y la gNB. Con `-n` solo muestra lo que cambiaría.
 
 ## Modelo del móvil por el tráfico (opcional, core)
 
@@ -256,6 +256,30 @@ Con una VPN de túnel completo como ruta por defecto se añade `ip rule from <re
 Agente del core: `GET /upf`, `POST /upf {accio: separa|ajunta|auto}`, `GET /upfs`, `/upf/<nombre>/<petición>`.
 Agente del UPF: `POST /upf_configura`, `GET /upf_estat`, `GET /upf_metriques`. Si `core5g.sh` se ejecuta con
 el extra «sense UPF», sigue funcionando: ajuntar desde el panel también quita sus marcas `# core5g: sense UPF`.
+
+## Cambiar la IP del core: `sudo agent5g`
+La IP del core **no se cambia desde el navegador**. En Parámetros, `DOCKER_HOST_IP` y `UPF_ADVERTISE_IP` son
+de solo lectura y, al pasar el ratón por encima, avisan de que se cambian por terminal. Esto se debe a que la
+IP afecta a la vez a los certificados, al panel y a todo el core.
+
+En el core, `sudo agent5g` abre un menú:
+1. **Ver la configuración**: IP, carpetas y certificados, con su SAN y su caducidad.
+2. **Cambiar la IP del core**. Si la IP nueva todavía no es de este PC y la IP fija viene de
+   `/etc/netplan/90-core5g.yaml`, ofrece cambiarla también. Después hace lo siguiente:
+   - en `.env`, cambia `DOCKER_HOST_IP` y también `UPF_ADVERTISE_IP` si era la misma IP;
+   - en `smf.yaml`, cambia `advertise` si el UPF está separado;
+   - actualiza `/etc/agent5g/core_ip` y `/etc/core5g.conf`;
+   - renueva el certificado del agente y el web del panel con la **misma CA**;
+   - regenera los códigos de emparejamiento con la IP nueva;
+   - reinicia todo el core, el panel (`https://<IP nueva>:8443`) y el agente.
+
+   Antes de tocar cada fichero guarda una copia.
+3. **Renovar los certificados** con la misma IP.
+
+En cada radio o PC con UPF, `sudo agent5g` → *Cambiar la IP del core*. Actualiza `"core"` en
+`agent5g.json` y, en la radio, `CORE_IP` del `.env` de ocudu (y recrea la gNB). Después reinicia el agente.
+**No hace falta volver a emparejar**, porque el certificado de la radio sigue valiendo con la misma CA.
+`desinstala.sh` quita también el comando `agent5g`.
 
 ## Desinstalar y reinstalar
 `sudo bash scripts/desinstala.sh` (o `core5g.sh` → 5) muestra qué hay instalado en ese PC y quita lo que

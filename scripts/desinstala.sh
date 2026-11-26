@@ -158,6 +158,7 @@ fi
 # /opt/agent5g/agent5g.py només si ja no el fa servir cap servei
 if ! te_unitat agent5g && ! te_unitat agent5g-upf; then
     rm -rf /opt/agent5g
+    rm -f /usr/local/sbin/agent5g
 fi
 systemctl daemon-reload
 echo

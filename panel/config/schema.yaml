@@ -68,7 +68,9 @@ core:
   camps:
     MCC:              {tipus: str, regex: "^[0-9]{3}$", etiqueta: "Codi de país (MCC)"}
     MNC:              {tipus: str, regex: "^[0-9]{2,3}$", etiqueta: "Codi de xarxa (MNC)"}
-    DOCKER_HOST_IP:   {tipus: ipv4, etiqueta: "IP del core (host)"}
-    UPF_ADVERTISE_IP: {tipus: ipv4, etiqueta: "IP anunciada per l'UPF (N3)"}
+    # La IP del core no es canvia des del navegador: afecta certificats, panell i tot el core.
+    # Es canvia al core amb el menú de terminal "sudo agent5g" (nomes_cli = text de l'avís).
+    DOCKER_HOST_IP:   {tipus: ipv4, etiqueta: "IP del core (host)", nomes_cli: "Es canvia per terminal al core: sudo agent5g > Canviar la IP del core (regenera els certificats i reinicia el core amb la IP nova)"}
+    UPF_ADVERTISE_IP: {tipus: ipv4, etiqueta: "IP anunciada per l'UPF (N3)", nomes_cli: "Va amb la IP del core: es canvia per terminal al core amb sudo agent5g"}
     # amf.yaml (tai): un TAC o diversos separats per comes (un per gNB si en tenen de diferents)
     TAC:              {tipus: str, regex: "^[0-9]{1,8}(,[0-9]{1,8}){0,15}$", etiqueta: "Codis d'àrea acceptats (TAC, separats per comes)"}
