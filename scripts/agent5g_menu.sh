@@ -12,6 +12,9 @@
 # A la ràdio o al PC del UPF:
 #   1) Veure la configuració
 #   2) Canviar la IP del core al qual truca (i reiniciar el que en depèn)
+# A tots: Actualitzar des de GitHub (baixa l'última versió i la instal·la; amb còpia).
+#   Font: AGENT5G_REPO (per defecte https://github.com/fernandoepp/5gpanel) i
+#   AGENT5G_BRANCA (per defecte main), p. ex.  sudo AGENT5G_BRANCA=proves agent5g
 #
 # La IP del core NO es canvia des del navegador (camp de només lectura): es fa aquí,
 # perquè afecta els certificats, el panell i tot el core alhora.
@@ -53,6 +56,11 @@ env_get() { sed -n "s/^$2=\(.*\)$/\1/p" "$1" 2>/dev/null | tail -1 | tr -d '"'"'
 ips_locals() { ip -4 -o addr show scope global 2>/dev/null | awk '{split($4,a,"/"); print a[1] " (" $2 ")"}'; }
 es_local() { ip -4 -o addr show 2>/dev/null | grep -q " $1/"; }
 ip_ruta() { ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p'; }
+
+REPO="${AGENT5G_REPO:-https://github.com/fernandoepp/5gpanel}"
+BRANCA="${AGENT5G_BRANCA:-main}"
+VERSIO_F=/opt/agent5g/VERSIO
+versio_actual() { cat "$VERSIO_F" 2>/dev/null || echo "desconeguda (instal·lada abans que hi hagués aquesta opció)"; }
 
 CFG_A=/etc/agent5g/agent5g.json
 CFG_U=/etc/agent5g-upf/agent5g.json
@@ -97,6 +105,7 @@ veure_core() {
     p="$(proj_core)"; certs="$(certs_core)"; pd="$(panell_dir)"
     echo
     echo "--- Configuració de l'agent del core ---"
+    info "versió:             $(versio_actual)"
     info "IP del core:        $(ip_core_actual)   (IPs d'aquest PC: $(ips_locals | tr '\n' ' '))"
     info "projecte:           $p"
     info ".env:               DOCKER_HOST_IP=$(env_get "$p/.env" DOCKER_HOST_IP)  UPF_ADVERTISE_IP=$(env_get "$p/.env" UPF_ADVERTISE_IP)"
@@ -216,6 +225,7 @@ canvia_ip_core() {
 veure_client() {   # veure_client <json> <nom>
     echo
     echo "--- $2 ---"
+    info "versió:             $(versio_actual)"
     info "truca al core:      $(jget "$1" core):$(jget "$1" core_port)"
     info "projecte:           $(jget "$1" project_dir)"
     mostra_cert "$(jget "$1" cert)"
@@ -251,6 +261,92 @@ canvia_core_client() {   # canvia_core_client <json> <servei> <nom>
     [[ "$svc" == agent5g-upf ]] && info "el core li tornarà a passar la configuració (SMF $nova) quan connecti"
 }
 
+# --- actualitzar des de GitHub (tots els rols) ---------------------------------------------
+baixa_codi() {   # baixa_codi <carpeta>: deixa el repo a <carpeta>/5gpanel i imprimeix la versió
+    local d="$1"
+    if command -v git >/dev/null && git clone -q --depth 1 --branch "$BRANCA" "$REPO" "$d/5gpanel" 2>/dev/null; then
+        git -C "$d/5gpanel" log -1 --format="%h · %cd ($BRANCA)" --date=format:'%Y-%m-%d %H:%M'
+    elif curl -fsSL "$REPO/archive/refs/heads/$BRANCA.tar.gz" 2>/dev/null | tar xz -C "$d" 2>/dev/null; then
+        mv "$d"/*-"${BRANCA//\//-}" "$d/5gpanel" 2>/dev/null || mv "$d"/*/ "$d/5gpanel"
+        echo "$BRANCA, $(date +%Y-%m-%d) (baixada sense git)"
+    else
+        return 1
+    fi
+}
+
+actualitza_agent() {   # agent de ràdio i/o UPF: agent5g.py + menú, i reinici dels serveis
+    local S="$1" bk serveis=() s ok=1
+    bk=/var/lib/agent5g/bak-$TS; [[ -d /var/lib/agent5g ]] || bk=/var/lib/agent5g-upf/bak-$TS
+    install -d -m 700 "$bk"
+    cp -a /opt/agent5g/agent5g.py "$bk/" 2>/dev/null || true
+    cp -a /opt/agent5g/agent5g_menu.sh "$bk/" 2>/dev/null || true
+    install -m 755 "$S/agent/agent5g.py" /opt/agent5g/agent5g.py
+    install -m 755 "$S/scripts/agent5g_menu.sh" /opt/agent5g/.agent5g_menu.nou
+    mv -f /opt/agent5g/.agent5g_menu.nou /opt/agent5g/agent5g_menu.sh
+    ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g
+    info "agent5g.py i el menú copiats (còpia de l'anterior a $bk)"
+    [[ "$ROL" == radio ]] && serveis+=(agent5g)
+    (( TE_UPF )) && serveis+=(agent5g-upf)
+    for s in "${serveis[@]}"; do systemctl restart "$s" || true; done
+    sleep 3
+    for s in "${serveis[@]}"; do
+        if systemctl is-active -q "$s"; then info "$s: en marxa"; else avis "$s no ha arrencat"; ok=0; fi
+    done
+    if (( ! ok )); then
+        avis "torno a la versió anterior"
+        cp -a "$bk/agent5g.py" /opt/agent5g/agent5g.py
+        for s in "${serveis[@]}"; do systemctl restart "$s" || true; done
+        return 1
+    fi
+}
+
+actualitza() {
+    local tmp nova S
+    echo
+    echo "--- Actualitzar des de GitHub ---"
+    info "versió instal·lada: $(versio_actual)"
+    info "font:               $REPO (branca $BRANCA)"
+    case "$ROL" in
+        core)  info "s'actualitza: agent del core, eines d'emparellament, menú i panell web (si és en aquest PC)" ;;
+        radio) info "s'actualitza: agent de la ràdio i menú (el gNB no es toca)" ;;
+    esac
+    (( TE_UPF )) && info "s'actualitza: agent del UPF (el contenidor upf no es toca)"
+    info "no es toquen: el core 5G, els certificats, la configuració ni els abonats"
+    si_no "Descarrego l'última versió i la instal·lo?" || return 0
+    tmp="$(mktemp -d /tmp/agent5g-act.XXXXXX)"
+    if ! nova="$(baixa_codi "$tmp")"; then
+        avis "no he pogut baixar $REPO (branca $BRANCA): mira la connexió a internet"
+        [[ "$tmp" == /tmp/agent5g-act.* ]] && rm -rf -- "$tmp"
+        return 0
+    fi
+    S="$tmp/5gpanel"
+    if [[ ! -f "$S/agent/agent5g.py" || ! -f "$S/scripts/agent5g_menu.sh" ]] \
+       || ! python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$S/agent/agent5g.py" \
+       || ! bash -n "$S/scripts/agent5g_menu.sh"; then
+        avis "el codi baixat no és complet o té errors: no instal·lo res"
+        [[ "$tmp" == /tmp/agent5g-act.* ]] && rm -rf -- "$tmp"
+        return 0
+    fi
+    info "versió nova: $nova"
+    echo
+    local ok=1
+    if [[ "$ROL" == core ]]; then
+        if ! PANEL_IP="$(ip_core_actual)" bash "$S/scripts/actualitzar.sh" 2>&1 | sed 's/^/      /'; then
+            ok=0; avis "actualitzar.sh ha fallat: llegeix els missatges de dalt (còpies a /var/lib/agent5g/bak-*)"
+        fi
+        if (( ok && TE_UPF )); then systemctl restart agent5g-upf || true; fi
+    else
+        actualitza_agent "$S" || ok=0
+    fi
+    [[ "$tmp" == /tmp/agent5g-act.* ]] && rm -rf -- "$tmp"
+    (( ok )) || return 0
+    printf '%s\n' "$nova" > "$VERSIO_F"
+    echo
+    echo "==> Actualitzat a $nova"
+    echo "    Torna a obrir el menú (sudo agent5g) per fer servir la versió nova."
+    exit 0
+}
+
 # --- menú ----------------------------------------------------------------------------------
 while true; do
     echo
@@ -269,9 +365,10 @@ while true; do
         opcions+=("veure_upf|Veure la configuració del UPF"
                   "core_upf|Canviar la IP del core al qual truca el UPF")
     fi
+    opcions+=("actualitza|Actualitzar des de GitHub (última versió)")
     i=1; for o in "${opcions[@]}"; do echo " $i) ${o#*|}"; i=$((i + 1)); done
     echo " $i) Sortir"
-    pregunta "Opció" op
+    read -r -p "    Opció: " op || { echo; exit 0; }   # Ctrl+D o sense terminal: surt
     [[ "$op" =~ ^[0-9]+$ ]] || continue
     (( op == i )) && exit 0
     (( op >= 1 && op < i )) || continue
@@ -285,5 +382,6 @@ while true; do
         core_radio)     canvia_core_client $CFG_A agent5g "Ràdio" ;;
         veure_upf)      veure_client $CFG_U "Agent del UPF" ;;
         core_upf)       canvia_core_client $CFG_U agent5g-upf "UPF" ;;
+        actualitza)     actualitza ;;
     esac
 done

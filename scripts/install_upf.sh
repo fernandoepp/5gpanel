@@ -275,6 +275,7 @@ pas 5 "Agent del UPF (agent5g-upf)"
 install -d -m 755 /opt/agent5g
 install -m 755 "$SRC/agent/agent5g.py" /opt/agent5g/agent5g.py
 install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
+git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 install -d -m 700 /etc/agent5g-upf /etc/agent5g-upf/certs /var/lib/agent5g-upf
 install -m 600 "$TMPC/ca.crt" "$TMPC/agent-upf.crt" "$TMPC/agent-upf.key" /etc/agent5g-upf/certs/
 rm -rf "$DESAT"

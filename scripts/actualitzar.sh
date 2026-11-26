@@ -12,8 +12,14 @@
 #   ssh -t core@192.168.2.99 sudo bash /tmp/panel5g-ua/scripts/actualitzar.sh
 set -euo pipefail
 SRC="$(cd "$(dirname "$0")/.." && pwd)"
-PANEL_DIR=${PANEL_DIR:-/opt/panel5g/panel}
+# Carpeta del panell: PANEL_DIR=..., o la del contenidor panel5g en marxa, o /opt/panel5g/panel.
+# Si en aquest PC no hi ha panell (només l'agent del core), s'actualitza només l'agent.
+if [[ -z ${PANEL_DIR:-} ]]; then
+  PANEL_DIR=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' panel5g 2>/dev/null || true)
+  [[ -d $PANEL_DIR/app ]] || PANEL_DIR=/opt/panel5g/panel
+fi
 # IP de la VM per on surt el trànsit (el DHCP la pot canviar): es pot forçar amb PANEL_IP=...
+PANEL_IP=${PANEL_IP:-$(cat /etc/agent5g/core_ip 2>/dev/null || true)}
 PANEL_IP=${PANEL_IP:-$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')}
 [[ -n $PANEL_IP ]] || { echo "No trobo la IP de la VM: defineix PANEL_IP"; exit 1; }
 [[ $EUID -eq 0 ]] || { echo "Cal executar-ho amb sudo"; exit 1; }
@@ -21,21 +27,26 @@ for f in agent/agent5g.py agent/ua_capture.py agent/ua-capture.service panel/Doc
          panel/app/main.py panel/app/radio.py panel/app/static/app.js panel/config/schema.yaml; do
   [[ -f "$SRC/$f" ]] || { echo "Falta $SRC/$f"; exit 1; }
 done
-[[ -d "$PANEL_DIR/app" ]] || { echo "No trobo el panell a $PANEL_DIR (defineix PANEL_DIR)"; exit 1; }
+AMB_PANELL=1
+[[ -d "$PANEL_DIR/app" ]] || { AMB_PANELL=0; echo ">> No hi ha panell a $PANEL_DIR: només s'actualitza l'agent (si en tens, PANEL_DIR=<carpeta>/panel)"; }
 command -v tshark >/dev/null || { echo "Falta tshark (ja s'hauria d'haver instal·lat amb l'agent)"; exit 1; }
 PYTHONDONTWRITEBYTECODE=1 python3 -c "import ast,sys; [ast.parse(open(f).read(), f) for f in sys.argv[1:]]" "$SRC/agent/agent5g.py" "$SRC/agent/ua_capture.py" "$SRC"/panel/app/*.py
 
 TS=$(date +%Y%m%d-%H%M%S)
 BK=/var/lib/agent5g/bak-$TS; install -d -m 700 "$BK"
 cp -a /opt/agent5g/agent5g.py "$BK/"
-cp -a "$PANEL_DIR/app" "$BK/app"
-cp -a "$PANEL_DIR/config/schema.yaml" "$BK/"
+if (( AMB_PANELL )); then cp -a "$PANEL_DIR/app" "$BK/app"; cp -a "$PANEL_DIR/config/schema.yaml" "$BK/"; fi
 echo ">> Còpies a $BK"
 
 install -m 755 -o root -g root "$SRC/agent/agent5g.py"   /opt/agent5g/agent5g.py
-install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
+# menú sudo agent5g: es copia a part i es renombra (pot ser el mateix menú qui ens executa)
+install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/.agent5g_menu.nou
+mv -f /opt/agent5g/.agent5g_menu.nou /opt/agent5g/agent5g_menu.sh
+ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g
+git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 install -m 755 -o root -g root "$SRC/agent/ua_capture.py" /opt/agent5g/ua_capture.py
 install -m 644 -o root -g root "$SRC/agent/ua-capture.service" /etc/systemd/system/ua-capture.service
+if (( AMB_PANELL )); then
 OWN=$(stat -c %u:%g "$PANEL_DIR/app/main.py")
 install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC"/panel/app/*.py "$PANEL_DIR/app/"
 install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC"/panel/app/static/* "$PANEL_DIR/app/static/"
@@ -49,6 +60,7 @@ install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/Dockerfile" "$PANEL_DIR
 if [[ -f "$SRC/panel/config/models.csv" && ! -f "$PANEL_DIR/config/models.csv" ]]; then
   install -m 644 -o "${OWN%:*}" -g "${OWN#*:}" "$SRC/panel/config/models.csv" "$PANEL_DIR/config/"
 fi
+fi   # AMB_PANELL
 
 # Enllaç ràdio -> core: ara són les ràdios les que truquen a l'agent del core (port 9544).
 #  - eines d'emparellament noves (emparella-radio <nom>; el codi porta la IP del core)
@@ -69,6 +81,7 @@ else
   echo ">> AVÍS: no trobo la CA (ca/ca.key): emparella_radio.sh <nom> <carpeta_certs> a mà"
 fi
 [[ -s /etc/agent5g/core_ip ]] || printf '%s\n' "$PANEL_IP" > /etc/agent5g/core_ip
+if (( AMB_PANELL )); then
 cp -a "$PANEL_DIR/config/panel.yaml" "$BK/"
 python3 - "$PANEL_DIR/config/panel.yaml" <<'PY'
 import re, sys
@@ -105,14 +118,15 @@ if re.search(r'^estat_logs:', txt, re.M) and not re.search(r'^  upf:', txt, re.M
 if canvi:
     open(f, 'w').write(txt)
 PY
+fi   # AMB_PANELL
 systemctl daemon-reload
 systemctl enable --now ua-capture
 systemctl restart agent5g
-(cd "$PANEL_DIR" && PANEL_IP="$PANEL_IP" docker compose up -d --build)
+if (( AMB_PANELL )); then (cd "$PANEL_DIR" && PANEL_IP="$PANEL_IP" docker compose up -d --build); fi
 sleep 4
-systemctl --no-pager --lines=0 status ua-capture agent5g | grep -E '●|Active:'
+systemctl --no-pager --lines=0 status ua-capture agent5g | grep -E '●|Active:' || true
 if systemctl is-active -q ua-capture && systemctl is-active -q agent5g; then
-  echo ">> Fet. Panell: https://$PANEL_IP:8443 (Ctrl+F5). Ha de dir 'Versió v17' a la barra lateral."
+  echo ">> Fet. Panell: https://$PANEL_IP:8443 (Ctrl+F5): la versió surt a la barra lateral."
   echo "   VoIP: Abonats i VoIP > Servei de telefonia > Activat (el core 5G no s'atura)."
   echo "   Ràdios: al core, sudo emparella-radio <nom>; a la ràdio, sudo bash scripts/enllaca_radio.sh codi.txt"
   echo "   (ràdio ja instal·lada) o install_radio.sh (nova). La ràdio truca sola al core $PANEL_IP:9544."

@@ -356,6 +356,7 @@ if (( AGENT_JA )); then
     info "ja instal·lat: no es toca ($(systemctl is-active agent5g 2>/dev/null || true); truca al core ${CORE_ENLLAC:-?})"
 fi
 install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
+git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 if (( AMB_AGENT )); then
     pas 8 "Agent del panell (agent5g)"
     install -d -m 755 /opt/agent5g

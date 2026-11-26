@@ -47,6 +47,7 @@ command -v python3 >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install 
 install -d -m 755 /opt/agent5g
 install -m 755 "$SRC/agent/agent5g.py" "$SRC/agent/ua_capture.py" /opt/agent5g/
 install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
+git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
 install -m 600 "$CERTS/agent-core/ca.crt" "$CERTS/agent-core/agent-core.crt" "$CERTS/agent-core/agent-core.key" /etc/agent5g/certs/
 # Configuració generada a partir del compose real: tots els seus contenidors es poden
