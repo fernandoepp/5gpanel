@@ -33,6 +33,7 @@ cp -a "$PANEL_DIR/config/schema.yaml" "$BK/"
 echo ">> Còpies a $BK"
 
 install -m 755 -o root -g root "$SRC/agent/agent5g.py"   /opt/agent5g/agent5g.py
+install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
 install -m 755 -o root -g root "$SRC/agent/ua_capture.py" /opt/agent5g/ua_capture.py
 install -m 644 -o root -g root "$SRC/agent/ua-capture.service" /etc/systemd/system/ua-capture.service
 OWN=$(stat -c %u:%g "$PANEL_DIR/app/main.py")

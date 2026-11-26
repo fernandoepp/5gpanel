@@ -46,6 +46,7 @@ command -v python3 >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install 
 # ---- 3. agent
 install -d -m 755 /opt/agent5g
 install -m 755 "$SRC/agent/agent5g.py" "$SRC/agent/ua_capture.py" /opt/agent5g/
+install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
 install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
 install -m 600 "$CERTS/agent-core/ca.crt" "$CERTS/agent-core/agent-core.crt" "$CERTS/agent-core/agent-core.key" /etc/agent5g/certs/
 # Configuració generada a partir del compose real: tots els seus contenidors es poden
@@ -72,9 +73,7 @@ cfg = {
     'project_dir': os.environ['PROJ'], 'env_file': '.env',
     'compose_files': [os.environ['COMPOSE']], 'compose_project': None,
     'editable_keys': old.get('editable_keys') or {
-        'MCC': '^[0-9]{3}$', 'MNC': '^[0-9]{2,3}$',
-        'DOCKER_HOST_IP': '^([0-9]{1,3}\\.){3}[0-9]{1,3}$',
-        'UPF_ADVERTISE_IP': '^([0-9]{1,3}\\.){3}[0-9]{1,3}$'},
+        'MCC': '^[0-9]{3}$', 'MNC': '^[0-9]{2,3}$'},   # la IP del core: sudo agent5g
     'containers': nucli,
     'services': [s for s in nucli if s not in ('mongo',)],
     'log_files': {}, 'backup_dir': '/var/lib/agent5g/backups', 'audit_log': '/var/lib/agent5g/audit.log',

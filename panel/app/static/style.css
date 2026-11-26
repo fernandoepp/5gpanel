@@ -246,3 +246,4 @@ input.w9 { width: 9em; }
 .espectre-svg .guia { stroke: var(--fg); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
 .espectre-svg .hit { fill: transparent; cursor: crosshair; }
 .espectre-svg .canal-txt.fora { fill: var(--fg); }
+label.nomes-cli { cursor: help; }
