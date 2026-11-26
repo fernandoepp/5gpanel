@@ -271,6 +271,13 @@ Agente del core: `GET /upf`, `POST /upf {accio: separa|ajunta|auto}`, `GET /upfs
 Agente del UPF: `POST /upf_configura`, `GET /upf_estat`, `GET /upf_metriques`. Si `core5g.sh` se ejecuta con
 el extra «sense UPF», sigue funcionando: ajuntar desde el panel también quita sus marcas `# core5g: sense UPF`.
 
+## Idioma del panel (ES / EN / CAT)
+Arriba a la derecha hay un selector **ES · EN · CAT**. Se recuerda en el navegador (`localStorage`), y la primera
+vez se elige por el idioma del navegador (castellano si no es catalán ni inglés). El panel está escrito en catalán;
+`static/i18n.js` traduce lo que se muestra (textos, *tooltips* y confirmaciones) con el diccionario
+`panel/i18n/dict.py`. Lo que no está en el diccionario se ve en catalán: sobre todo, algunos mensajes que vienen
+de los agentes. Para añadir textos: edita `panel/i18n/dict.py` y ejecuta `python3 scripts/i18n_genera.py`.
+
 ## Cambiar la IP del core: `sudo agent5g`
 La IP del core **no se cambia desde el navegador**. En Parámetros, `DOCKER_HOST_IP` y `UPF_ADVERTISE_IP` son
 de solo lectura y, al pasar el ratón por encima, avisan de que se cambian por terminal. Esto se debe a que la
