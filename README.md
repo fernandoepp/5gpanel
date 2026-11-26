@@ -35,6 +35,7 @@ sudo bash core5g.sh
 - **Core**: el menú de siempre (red, versión, instalar). El agente y el panel web son el extra «panel5g» de la versión genérica.
 - **Radio**: ejecuta `scripts/install_radio.sh` (Docker, ocudu, gNodeB) y pregunta si instala también el agente del panel. Con agente pide el código de emparejamiento.
 - **UPF**: ejecuta `scripts/install_upf.sh` y pregunta lo mismo. Sin agente, solo pide la IP del core, y el core se separa a mano (extra «sin UPF»).
+- **Core con panel5g**: no pregunta por el UPF. Si después instalas un UPF con agente en otro PC (`sudo emparella-upf <nombre>` en el core), el UPF llama al core y el SMF pasa a usarlo solo (modo automático del panel). La pregunta «sin UPF» con la IP del UPF solo sale si instalas el core sin panel5g.
 - **Desinstalar**: `scripts/desinstala.sh`.
 
 Lo que hace cada pieza por dentro:
