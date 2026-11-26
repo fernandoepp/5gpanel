@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .auth import DUMMY, RateLimiter, verify_password
 from .devices import build as build_devices
 from .gnbs import build as build_gnbs
+from .tacdb import TacDB
 from .radio import calcula as radio_calc
 from .validation import services_for, validate, validate_plmn, validate_tdd
 
@@ -72,8 +73,32 @@ def _secret():
 def _ssl_ctx():
     ctx = ssl.create_default_context(cafile=CFG['ca'])
     ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    # Els agents s'identifiquen pel certificat (signat per LA NOSTRA CA i amb CN agent-*),
+    # no per la IP: així un canvi de xarxa (DHCP) no obliga a tornar a emetre certificats.
+    # El CN es comprova a cada resposta (_check_peer).
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.load_cert_chain(CFG['client_cert'], CFG['client_key'])
     return ctx
+
+
+def _peer_cn(r):
+    stream = r.extensions.get('network_stream')
+    sslobj = stream.get_extra_info('ssl_object') if stream else None
+    cert = sslobj.getpeercert() if sslobj else None
+    for rdn in (cert or {}).get('subject', ()):
+        for k, v in rdn:
+            if k == 'commonName':
+                return v
+    return None
+
+
+def _check_peer(r):
+    """Només acceptem agents: certificat de la CA (ja verificat pel TLS) amb CN agent-core o agent-radio*."""
+    cn = _peer_cn(r) or ''
+    if not (cn == 'agent-core' or cn.startswith('agent-radio')):
+        raise httpx.ConnectError(f'certificat no és d\'un agent (CN={cn or "?"})')
+    return cn
 
 
 _CTX = None
@@ -91,7 +116,13 @@ def client(target, timeout=15.0):
 async def agent(target, method, path, user='-', timeout=15.0, **kw):
     try:
         async with client(target, timeout) as c:
-            r = await c.request(method, path, headers={'X-Panel-User': user}, **kw)
+            # en streaming: el certificat de l'agent només es pot llegir amb la connexió oberta
+            r = await c.send(c.build_request(method, path, headers={'X-Panel-User': user}, **kw), stream=True)
+            try:
+                _check_peer(r)
+                await r.aread()
+            finally:
+                await r.aclose()
     except httpx.HTTPError as e:
         raise HTTPException(502, f'agent {target} no accessible: {type(e).__name__}')
     data = r.json() if r.headers.get('content-type', '').startswith('application/json') else {}
@@ -124,9 +155,9 @@ def _desc_port():
 
 def _desc_xarxes():
     xs = DESC_CFG.get('xarxes')
-    if xs is None:      # per defecte: la /24 de cada agent de panel.yaml que tingui IP de LAN
+    if xs is None:      # per defecte: la /24 del panell (PANEL_IP) i la de cada agent de panel.yaml amb IP de LAN
         xs = []
-        for a in AGENTS.values():
+        for a in [{'ip': os.environ.get('PANEL_IP')}] + list(AGENTS.values()):
             try:
                 ip = ipaddress.ip_address(a['ip'] or '')
             except ValueError:
@@ -158,7 +189,12 @@ async def _prova(ip, port):
     url = f'https://{ip}:{port}'
     try:
         async with httpx.AsyncClient(base_url=url, verify=_CTX, timeout=5.0, trust_env=False) as c:
-            r = await c.get('/health', headers={'X-Panel-User': 'descobriment'})
+            r = await c.send(c.build_request('GET', '/health', headers={'X-Panel-User': 'descobriment'}), stream=True)
+            try:
+                _check_peer(r)
+                await r.aread()
+            finally:
+                await r.aclose()
         h = r.json()
     except (httpx.HTTPError, ValueError, ssl.SSLError):
         return None
@@ -644,7 +680,7 @@ def load_tac():
     return out
 
 
-TAC = load_tac()
+TAC = TacDB(load_tac())   # tac.csv del laboratori + base de dades pública de TAC
 
 
 def load_noms():
@@ -681,8 +717,11 @@ async def _safe(coro, default):
         return default, str(e.detail)
 
 
-async def _core_data(t, user, gnbs=False):
-    """Logs de l'AMF/SMF i captura d'un equip amb AMF -> (health, devs, extra, fonts)."""
+async def _core_data(t, user, gnbs=False, historial=True):
+    """Quins dispositius i gNB hi ha: NOMÉS l'estat en viu de l'AMF i l'SMF (agent /estat5g,
+    API JSON d'Open5GS). Els logs de l'AMF/SMF només afegeixen l'historial d'aquests mateixos
+    dispositius i gNB. Sense captura (tshark). Amb historial=False no llegeix els logs (resposta
+    ràpida: el navegador pinta això primer i després demana l'historial). -> (health, devs, extra, fonts)"""
     health = await agent(t, 'GET', '/health', user)
     conts = health.get('containers', [])
     if 'amf' not in conts:
@@ -690,48 +729,30 @@ async def _core_data(t, user, gnbs=False):
     n = 2000
 
     async def logs_of(c):
-        if c not in conts:
+        if not historial or c not in conts:
             return ''
         return (await agent(t, 'GET', '/logs', user, params={'container': c, 'tail': n}))['log']
 
-    async def capture(path):
-        if not health.get('ue_capture'):
-            return {}
-        return await agent(t, 'GET', path, user, timeout=90.0)
-
     async def estat():
         if not health.get('estat5g'):
-            return {}
+            raise HTTPException(502, 'agent sense /estat5g (actualitza l\'agent)')
         return await agent(t, 'GET', '/estat5g', user, timeout=30.0)
 
-    tasks = [_safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''), _safe(capture('/ues'), {}),
-             _safe(estat(), {})]
-    if gnbs:
-        tasks.append(_safe(capture('/gnbs'), {}))
-    res = await asyncio.gather(*tasks)
-    (amf, e1), (smf, e2), (cap, e3), (viu, e5) = res[:4]
-    devs = build_devices(amf, smf, cap.get('ues', []), TAC, load_noms(),
-                         user_agents=cap.get('user_agents', []), models=MODELS, viu=viu)
-    fonts = {'amf': e1 or 'ok', 'smf': e2 or 'ok',
-             'captura': e3 or ('ok' if health.get('ue_capture') else 'no configurada')}
+    (viu, e5), (amf, e1), (smf, e2) = await asyncio.gather(
+        _safe(estat(), {}), _safe(logs_of('amf'), ''), _safe(logs_of('smf'), ''))
     errs = (viu or {}).get('errors') or {}
-    if not health.get('estat5g'):
-        fonts['estat_viu'] = 'agent sense /estat5g (actualitza l\'agent)'
-    else:
-        fonts['estat_viu'] = e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok')
-    extra = {'amf_log': amf, 'viu': viu}
-    if gnbs:
-        g, e4 = res[4]
-        extra['gnbs'] = g.get('gnbs', [])
-        if e4:
-            fonts['captura_gnb'] = e4
+    fonts = {'estat_viu': e5 or ('; '.join(sorted(set(errs.values()))) if errs else 'ok'),
+             'historial': ('ok' if not (e1 or e2) else '; '.join(x for x in (e1, e2) if x))
+             if historial else 'pendent'}
+    devs = build_devices(amf, smf, None, TAC, load_noms(), models=MODELS, viu=viu, nomes_viu=True)
+    extra = {'amf_log': amf, 'viu': viu, 'gnbs': None}
     return health, devs, extra, fonts
 
 
 @app.get('/api/ues/{t}')
-async def ues(t: str, s=Depends(admin_read)):
+async def ues(t: str, historial: bool = True, s=Depends(admin_read)):
     # Només admin: IMSI i IMEI són dades personals dels qui connecten el mòbil
-    _, devs, _, fonts = await _core_data(t, s['user'])
+    _, devs, _, fonts = await _core_data(t, s['user'], historial=historial)
     return {'dispositius': devs, 'fonts': fonts}
 
 
@@ -747,11 +768,11 @@ async def _radio_info(t, user):
 
 
 @app.get('/api/gnbs/{t}')
-async def gnbs(t: str, s=Depends(current_user)):
-    _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True)
+async def gnbs(t: str, historial: bool = True, s=Depends(current_user)):
+    _, devs, extra, fonts = await _core_data(t, s['user'], gnbs=True, historial=historial)
     radios = [r for r in await asyncio.gather(*(_radio_info(o, s['user']) for o in targets() if o != t)) if r]
     res = build_gnbs(extra['amf_log'], extra.get('gnbs'), devs, radios,
-                     viu=(extra.get('viu') or {}).get('gnbs'))
+                     viu=(extra.get('viu') or {}).get('gnbs'), nomes_viu=True)
     if s['rol'] != 'admin':                       # el lector no veu IMSI
         for g in res['gnbs']:
             g['ues'] = [{k: v for k, v in u.items() if k not in ('imsi', 'nom')} for u in g['ues']]

@@ -1,6 +1,6 @@
 {
   "role": "radio",
-  "listen": "192.168.1.31",
+  "listen": "auto",
   "port": 9443,
   "cert": "/etc/agent5g/certs/agent-radio.crt",
   "key": "/etc/agent5g/certs/agent-radio.key",

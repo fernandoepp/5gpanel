@@ -36,7 +36,7 @@ def _secs(iso):
         return None
 
 
-def build(amf_log, captured=None, ues=None, radios=None, viu=None):
+def build(amf_log, captured=None, ues=None, radios=None, viu=None, nomes_viu=False):
     gnbs = {}
     n_gnbs = None
 
@@ -147,6 +147,11 @@ def build(amf_log, captured=None, ues=None, radios=None, viu=None):
         altres = [ip for ip in ids.get(d.get('gnb_id'), []) if ip != d['ip']]
         if altres:
             d['gnb_id_repetit'] = altres
+
+    if nomes_viu:                               # només els gNB que l'AMF té ara; el log, d'historial
+        ara = {v.get('ip') for v in viu or []}
+        for ip in [ip for ip in gnbs if ip not in ara]:
+            del gnbs[ip]
 
     # ---- gNB local (agent de la ràdio)
     for r in radios or []:

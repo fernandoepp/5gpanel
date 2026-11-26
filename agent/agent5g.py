@@ -49,6 +49,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
@@ -2284,12 +2285,58 @@ def main():
     ctx.verify_mode = ssl.CERT_REQUIRED
     ctx.load_cert_chain(CFG['cert'], CFG['key'])
     ctx.load_verify_locations(CFG['ca'])
-    srv = ThreadingHTTPServer((CFG['listen'], CFG['port']), Handler)
+    listen, auto = CFG['listen'], CFG['listen'] == 'auto'
+    if auto:
+        listen = ip_lan()
+    try:
+        srv = ThreadingHTTPServer((listen, CFG['port']), Handler)
+    except OSError as e:
+        # 99 = la IP de "listen" ja no és d'aquest equip (la xarxa/DHCP ha canviat).
+        # Abans l'agent moria i systemd el reiniciava en bucle; ara escolta a la IP actual.
+        try:
+            pont = ipaddress.ip_address(listen) in ipaddress.ip_network('172.16.0.0/12')
+        except ValueError:
+            pont = True
+        if e.errno != 99 or pont:             # el pont de Docker (agent del core) no es toca
+            raise
+        nova = ip_lan()
+        print(f'agent5g: {listen} ja no és d\'aquest equip; escolto a {nova}. '
+              f'Posa "listen": "auto" a la configuració per no veure aquest avís.', flush=True)
+        listen, auto = nova, True
+        srv = ThreadingHTTPServer((listen, CFG['port']), Handler)
     # Handshake al fil del client: un client lent no bloqueja l'accept.
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True, do_handshake_on_connect=False)
-    print(f'agent5g escoltant a https://{CFG["listen"]}:{CFG["port"]} ({CFG.get("role")})',
-          flush=True)
+    print(f'agent5g escoltant a https://{listen}:{CFG["port"]} ({CFG.get("role")})', flush=True)
+    if auto:
+        threading.Thread(target=vigila_ip, args=(listen,), daemon=True).start()
     srv.serve_forever()
+
+
+def ip_lan():
+    """IP per on surt el trànsit (la de la LAN). No envia res: només tria la ruta."""
+    for _ in range(30):                       # en arrencar, la xarxa pot trigar uns segons
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('1.1.1.1', 53))
+                return s.getsockname()[0]
+        except OSError:
+            time.sleep(2)
+    sys.exit('agent5g: no trobo cap IP de LAN (no hi ha ruta per defecte)')
+
+
+def vigila_ip(actual):
+    """Si el DHCP canvia la IP, surt perquè systemd reiniciï l'agent a la IP nova."""
+    while True:
+        time.sleep(30)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(('1.1.1.1', 53))
+                ara = s.getsockname()[0]
+        except OSError:
+            continue
+        if ara != actual:
+            print(f'agent5g: la IP ha canviat ({actual} -> {ara}); reinicio', flush=True)
+            os._exit(0)
 
 
 if __name__ == '__main__':

@@ -612,7 +612,7 @@ function fitxaUE(u) {
     ['IMEISV', dsp.imeisv || dsp.imei || (dsp.masked_imeisv ? `${dsp.masked_imeisv.slice(0, 10)}····${dsp.masked_imeisv.slice(14)} (emmascarat)` : 'desconegut'),
       dsp.masked_imeisv && !dsp.imeisv ? 'Masked IMEISV de l\'NGAP: els dígits 11-14 no s\'envien, però el TAC (8 primers) sí' : ''],
     ['Model', dsp.model ? `${dsp.model}${dsp.model_font === 'User-Agent' ? ' (pel trànsit)' : ''}` : (dsp.tac ? `TAC ${dsp.tac} (afegeix-lo a tac.csv)` : null),
-      dsp.model_font === 'User-Agent' ? 'Tret del User-Agent HTTP o SIP (REGISTER d\'IMS) del mòbil; el nom comercial ve de config/models.csv' : (dsp.model_font === 'TAC' ? 'Del TAC de l\'IMEI via tac.csv' : '')],
+      dsp.model_font === 'User-Agent' ? 'Tret del User-Agent HTTP o SIP (REGISTER d\'IMS) del mòbil; el nom comercial ve de config/models.csv' : (dsp.model_font === 'TAC' ? `Del TAC ${dsp.tac} de l'IMEI${dsp.tac_font === 'tac.csv' ? ' (config/tac.csv)' : ' (base de dades MoazEb/tac-database)'}${dsp.model_detall ? ': ' + dsp.model_detall : ''}` : '')],
     ['Sistema', dsp.so],
     ['MAC', 'no en té', 'Un mòbil 5G no fa servir Ethernet/Wi-Fi cap al core: la sessió PDU és IP pura i no hi viatja cap MAC. Les MAC de les captures són del gNB i del core. L\'identificador de maquinari equivalent és l\'IMEI.'],
     ['5G-TMSI', u.tmsi ? `${u.tmsi} (${hexDec(u.tmsi)})` : null, u.tmsis && u.tmsis.length > 1 ? `Anteriors: ${u.tmsis.slice(0, -1).join(', ')}` : ''],
@@ -668,24 +668,45 @@ function fitxaUE(u) {
 }
 
 const OBERTS = new Set();   // fitxes amb l'activitat desplegada (es manté en refrescar)
+// Dues passades: primer l'estat en viu (API de l'AMF/SMF, ràpid) i es pinta de seguida;
+// després l'historial dels logs, que substitueix les fitxes quan arriba. Un comptador evita
+// que una resposta vella trepitgi una de més nova si es refresca o es canvia d'equip.
+let SEQ_UE = 0;
+const HIST_UE = {};   // últim historial per equip i dispositiu: en refrescar no es perd mentre es recarrega
+function pintaUEs(box, d, t, carregant) {
+  const f = d.fonts || {};
+  const clau = (u) => u.imsi || u.suci || '';
+  if (carregant) d.dispositius.forEach((u) => { const h = (HIST_UE[t] || {})[clau(u)]; if (h && !(u.events || []).length) u.events = h; });
+  else HIST_UE[t] = Object.fromEntries(d.dispositius.map((u) => [clau(u), u.events || []]));
+  $('#ue-fonts').textContent = `Font: estat en viu de l'AMF i l'SMF (${f.estat_viu || '—'}); historial dels logs (${carregant ? 'carregant…' : (f.historial || '—')}). Actualitzat ${new Date().toLocaleTimeString()}.`;
+  if (!d.dispositius.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap dispositiu ara mateix.')); return; }
+  const n = (e) => d.dispositius.filter((u) => u.estat === e).length;
+  box.replaceChildren(
+    el('p', { class: 'resum' }, `${d.dispositius.length} dispositius · `, el('span', { class: 'ok' }, `${n('connectat') + n('inactiu')} connectats`),
+      n('inactiu') ? ` (${n('inactiu')} en repòs)` : '', ' · ', `${n('desregistrat')} desregistrats`,
+      carregant ? el('span', { class: 'nota' }, ' · carregant l\'historial…') : null),
+    el('div', { class: 'graella ues' }, d.dispositius.map(fitxaUE)));
+}
 async function carregaUEs() {
   await omplirDestinsUE();
   const t = $('#ue-desti').value;
   const box = $('#ue-taula');
   if (!t) { box.replaceChildren(el('p', { class: 'error' }, 'Cap equip amb AMF accessible.')); return; }
-  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF, logs i captura…'));
+  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF i l\'SMF…'));
+  const seq = ++SEQ_UE;
+  try {
+    const d = await api('GET', `/api/ues/${t}?historial=false`);
+    if (seq !== SEQ_UE) return;
+    pintaUEs(box, d, t, true);
+  } catch (e) {
+    if (seq === SEQ_UE) box.replaceChildren(el('p', { class: 'error' }, e.message));
+    return;
+  }
   try {
     const d = await api('GET', `/api/ues/${t}`);
-    const f = d.fonts || {};
-    $('#ue-fonts').textContent = `Fonts: estat en viu AMF/SMF ${f.estat_viu || '—'}, log AMF ${f.amf}, log SMF ${f.smf}, captura N2 ${f.captura}. Actualitzat ${new Date().toLocaleTimeString()}.`;
-    if (!d.dispositius.length) { box.replaceChildren(el('p', { class: 'nota' }, 'Cap dispositiu vist des que va arrencar l\'AMF.')); return; }
-    const n = (e) => d.dispositius.filter((u) => u.estat === e).length;
-    box.replaceChildren(
-      el('p', { class: 'resum' }, `${d.dispositius.length} dispositius · `, el('span', { class: 'ok' }, `${n('connectat') + n('inactiu')} connectats`),
-        n('inactiu') ? ` (${n('inactiu')} en repòs)` : '', ' · ', `${n('desregistrat')} desregistrats`),
-      el('div', { class: 'graella ues' }, d.dispositius.map(fitxaUE)));
+    if (seq === SEQ_UE) pintaUEs(box, d, t, false);
   } catch (e) {
-    box.replaceChildren(el('p', { class: 'error' }, e.message));
+    if (seq === SEQ_UE) $('#ue-fonts').textContent += ` No s'ha pogut carregar l'historial: ${e.message}`;
   }
 }
 $('#ue-refresca').addEventListener('click', carregaUEs);
@@ -749,22 +770,43 @@ function fitxaGnb(g) {
     el('div', { class: 'ue-cols' }, ...cols, local), ues, avisos, act);
 }
 
+let SEQ_GNB = 0;
+const HIST_GNB = {};
+function pintaGnbs(box, d, t, carregant) {
+  const f = d.fonts || {};
+  const clau = (g) => String(g.ip ?? g.gnb_id ?? g.nom ?? '');
+  if (carregant) d.gnbs.forEach((g) => { const h = (HIST_GNB[t] || {})[clau(g)];
+    if (h) { if (!(g.events || []).length) g.events = h.events; if (!(g.setups || []).length) g.setups = h.setups; } });
+  else HIST_GNB[t] = Object.fromEntries(d.gnbs.map((g) => [clau(g), { events: g.events || [], setups: g.setups || [] }]));
+  $('#gnb-fonts').textContent = `Font: estat en viu de l'AMF (${f.estat_viu || '—'}); historial del log (${carregant ? 'carregant…' : (f.historial || '—')}). ` +
+    (d.n_gnbs_amf != null ? `L'AMF diu que té ${d.n_gnbs_amf} gNB. ` : '') + `Actualitzat ${new Date().toLocaleTimeString()}.`;
+  if (!d.gnbs.length) { box.replaceChildren(el('p', { class: 'nota' }, 'L\'AMF no té cap gNB connectat ara mateix.')); return; }
+  const n = d.gnbs.filter((g) => g.connectat || g.connectat_probable).length;
+  box.replaceChildren(el('p', { class: 'resum' }, `${d.gnbs.length} gNB · `, el('span', { class: 'ok' }, `${n} connectats`),
+    carregant ? el('span', { class: 'nota' }, ' · carregant l\'historial…') : null),
+    el('div', { class: 'graella ues' }, d.gnbs.map(fitxaGnb)));
+}
 async function carregaGnbs() {
   await omplirDestinsUE('#gnb-desti');
   const t = $('#gnb-desti').value;
   const box = $('#gnb-llista');
   if (!t) { box.replaceChildren(el('p', { class: 'error' }, 'Cap equip amb AMF accessible.')); return; }
-  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF, logs i captura…'));
+  if (!box.children.length) box.replaceChildren(el('p', { class: 'nota' }, 'Llegint l\'estat de l\'AMF i l\'SMF…'));
+  const seq = ++SEQ_GNB;
+  try {
+    const d = await api('GET', `/api/gnbs/${t}?historial=false`);
+    if (seq !== SEQ_GNB) return;
+    pintaGnbs(box, d, t, true);
+  } catch (e) {
+    if (seq === SEQ_GNB) box.replaceChildren(el('p', { class: 'error' }, e.message));
+    return;
+  }
   try {
     const d = await api('GET', `/api/gnbs/${t}`);
-    const f = d.fonts || {};
-    $('#gnb-fonts').textContent = `Fonts: estat en viu AMF ${f.estat_viu || '—'}, log AMF ${f.amf}, captura N2 ${f.captura_gnb || f.captura}. ` +
-      (d.n_gnbs_amf != null ? `L'AMF diu que té ${d.n_gnbs_amf} gNB. ` : '') + `Actualitzat ${new Date().toLocaleTimeString()}.`;
-    if (!d.gnbs.length) { box.replaceChildren(el('p', { class: 'nota' }, 'Cap gNB vist encara.')); return; }
-    const n = d.gnbs.filter((g) => g.connectat || g.connectat_probable).length;
-    box.replaceChildren(el('p', { class: 'resum' }, `${d.gnbs.length} gNB · `, el('span', { class: 'ok' }, `${n} connectats`)),
-      el('div', { class: 'graella ues' }, d.gnbs.map(fitxaGnb)));
-  } catch (e) { box.replaceChildren(el('p', { class: 'error' }, e.message)); }
+    if (seq === SEQ_GNB) pintaGnbs(box, d, t, false);
+  } catch (e) {
+    if (seq === SEQ_GNB) $('#gnb-fonts').textContent += ` No s'ha pogut carregar l'historial: ${e.message}`;
+  }
 }
 $('#gnb-refresca').addEventListener('click', carregaGnbs);
 $('#gnb-desti').addEventListener('change', () => { $('#gnb-llista').replaceChildren(); carregaGnbs(); });

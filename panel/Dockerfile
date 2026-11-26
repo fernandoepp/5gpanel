@@ -4,6 +4,8 @@ WORKDIR /srv
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt && useradd -r -u 10001 panel
 COPY app ./app
+# Base de dades de TAC (MoazEb/tac-database) -> SQLite dins la imatge (no ocupa memòria)
+RUN python -m app.tacdb build
 # Les carpetes compartides (vboxsf, SMB...) poden copiar fitxers amb 0600/0700
 RUN chmod -R a+rX,go-w /srv/app
 USER panel

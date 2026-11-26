@@ -54,6 +54,17 @@ Desde Open5GS v2.7.7, el servidor de métricas del AMF y del SMF (puerto 9091 en
 - Por defecto usa `AMF_IP` y `SMF_IP` del `.env` y el puerto 9091. Se puede cambiar en `/etc/agent5g/agent5g.json`: `"open5gs_api": {"amf": "http://IP:9091", "smf": "http://IP:9091", "timeout": 3}`.
 - Si Open5GS es anterior a v2.7.7 (responde 400/404), el panel lo indica en la línea «Fonts» y sigue con logs y captura. Comprobación rápida desde el core: `curl -s http://172.22.0.10:9091/ue-info`.
 
+## Modelo del móvil por TAC
+
+El modelo sale de los 8 primeros dígitos del IMEI (TAC). Primero se mira `config/tac.csv` (los móviles del laboratorio, manda siempre) y después la base de datos pública [MoazEb/tac-database](https://github.com/MoazEb/tac-database) (licencia MIT, ~276.000 TAC), que va en `panel/app/data/tac_full.csv.gz`. Al construir la imagen se convierte a SQLite (`python -m app.tacdb build`), así no ocupa memoria del contenedor (256 MB). Para actualizarla: descarga `tac_full.csv` del repositorio, comprímela con `gzip -9` en `panel/app/data/` y vuelve a ejecutar `scripts/actualitzar.sh`.
+
+## Cambio de red
+
+- Los agentes se identifican por el certificado (firmado por nuestra CA y con CN `agent-core` o `agent-radio*`), no por la IP: si la IP cambia no hace falta volver a emitir certificados.
+- El agente de radio con `"listen": "auto"` escucha en la IP de la LAN que tenga en cada momento y se reinicia solo si el DHCP la cambia. Si la IP configurada ya no existe, usa la actual en lugar de reiniciarse en bucle.
+- El panel busca radios también en la /24 de su propia IP (`PANEL_IP`).
+- `scripts/canviar_xarxa.sh core <IP_radio>` (en el core) y `scripts/canviar_xarxa.sh radio <IP_core>` (en la radio) cambian las IPs viejas por las nuevas en `.env`, `sa-deploy.yaml`, `smf.yaml`, `panel.yaml`, `upf_remot/.env` y el `.env` de ocudu, con copia de cada fichero, y recrean el SMF, el panel, la UPF y la gNB. Con `-n` solo muestra lo que cambiaría.
+
 ## Modelo del móvil por el tráfico (opcional, core)
 
 `agent/ua_capture.py` + `ua-capture.service` escuchan N3 (GTP-U, UDP 2152) con `tshark` y guardan **solo** IP del UE + `User-Agent` HTTP + hora en `/var/lib/agent5g/ua.json` (máx. 300 entradas; nada de URLs, hosts ni contenido, nada de pcap a disco). El panel cruza la IP con la que el SMF dio a cada IMSI en ese momento y pone en la ficha el modelo (p. ej. `SM-S911B`) y el sistema (`Android 14`).

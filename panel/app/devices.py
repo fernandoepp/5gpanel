@@ -4,7 +4,7 @@ Ajunta tres fonts que el panell ja pot llegir a través de l'agent:
   * log de l'AMF  -> SUCI/SUPI, 5G-TMSI, cel·la, registres, service requests,
                      errors d'autenticació, paging, DNN rebutjats, slice de cada sessió
   * log de l'SMF  -> IP assignada a cada sessió PDU (i quan s'allibera)
-  * captura NGAP  -> IMEISV/IMEI (model via tac.csv) i algorisme de xifrat NAS
+  * captura NGAP  -> IMEISV/IMEI (model via tac.csv i la base de dades de TAC) i algorisme de xifrat NAS
   * User-Agent HTTP del pla d'usuari (ua_capture.py) -> model i SO, creuant la IP
                      del UE amb la IP que l'SMF li va donar en aquell moment
 
@@ -168,7 +168,9 @@ class Dev(dict):
 
 
 def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents=None, models=None,
-          viu=None):
+          viu=None, nomes_viu=False):
+    """nomes_viu: només surten els dispositius que l'AMF/SMF tenen ara (estat en viu); els logs
+    hi afegeixen l'historial però no en creen de nous."""
     devs = {}            # clau: imsi o suci
     suci2imsi = {}
     tmsi2key = {}
@@ -349,6 +351,7 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
             if not k:
                 continue
             d = dev(k)
+            d.seen(viu.get('ts'))
             al_amf.add(k)
             if u.get('suci'):
                 d['suci'] = u['suci']
@@ -431,6 +434,10 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
                 info['so'] = p['so']
 
     # ---- acabats
+    if nomes_viu:
+        vius = {u.get('imsi') or u.get('suci') for u in viu.get('ues') or []}
+        vius |= {p.get('imsi') for p in viu.get('pdus') or []}
+        devs = {k: d for k, d in devs.items() if k in vius}
     out = []
     for k, d in devs.items():
         info = d['dispositiu']
@@ -438,7 +445,13 @@ def build(amf_log, smf_log='', capture=None, tac_db=None, noms=None, user_agents
         if ident:
             info['tac'] = ident[:8]
             info['emmascarat'] = not (info.get('imeisv') or info.get('imei'))
-            info['model'] = (tac_db or {}).get(ident[:8])
+            ti = tac_db.info(ident[:8]) if hasattr(tac_db, 'info') else None
+            if ti:
+                info['model'] = ti['model']
+                info['model_detall'] = ti['detall']
+                info['tac_font'] = ti['font']
+            else:
+                info['model'] = (tac_db or {}).get(ident[:8])
         if info.get('model_trafic'):
             codi = info['model_trafic']
             nom = (models or {}).get(codi.upper())
@@ -495,10 +508,10 @@ def diagnostics(d):
     dsp = d['dispositiu']
     if not (dsp.get('imeisv') or dsp.get('imei') or dsp.get('masked_imeisv')):
         av.append({'nivell': 'info', 'text':
-                   'IMEISV encara desconegut: apareix quan el mòbil fa un registre complet '
-                   '(Security Mode) dins la finestra de captura; després queda desat.'})
+                   'IMEISV encara desconegut: l\'AMF el rep quan el mòbil completa el registre '
+                   '(Security Mode Complete).'})
     if dsp.get('tac') and not dsp.get('model'):
         av.append({'nivell': 'info', 'text':
-                   f'Model desconegut: afegeix el TAC {dsp["tac"]} a config/tac.csv (tac,marca,model). '
-                   'També surt sol amb el User-Agent d\'una petició HTTP sense TLS o del REGISTER SIP d\'IMS.'})
+                   f'Model desconegut: el TAC {dsp["tac"]} no és a la base de dades de TAC; afegeix-lo a config/tac.csv (tac,marca,model). '
+                   ''})
     return av
