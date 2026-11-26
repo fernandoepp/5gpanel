@@ -3,12 +3,16 @@
 # a install_upf.sh. S'executa al core, que és on hi ha la CA.
 #
 #   sudo emparella-upf <nom_del_upf> [carpeta_certs]      (per defecte /root/certs-5g)
+#   sudo emparella-upf --nou <nom>      (certificat nou: per renovar-lo al PC del UPF amb sudo agent5g)
 #
 # Com la ràdio: NO cal saber la IP del PC del UPF. És el PC del UPF qui truca al core; el
 # core el reconeix pel certificat (CN agent-upf-<nom>), li passa la configuració i, si el
 # mode automàtic és actiu, el fa servir (separa el UPF del core). El codi porta ca.crt, el
 # certificat i la clau d'aquest UPF i la IP:port del core. No porta mai ca.key.
 set -euo pipefail
+# --nou: torna a emetre el certificat encara que ja n'hi hagi un (renovar-lo). També es renova
+# sol si caduca d'aquí a menys de 30 dies o si no és de la CA actual.
+NOU=0; a=(); for x in "$@"; do if [[ $x == --nou ]]; then NOU=1; else a+=("$x"); fi; done; set -- "${a[@]}"
 NOM=${1:?nom del UPF (p. ex. upf1)}
 CERTS=${2:-/root/certs-5g}
 [[ $EUID -eq 0 ]] || { echo "Executa amb sudo"; exit 1; }
@@ -20,7 +24,13 @@ CORE_IP=${CORE5G_CORE_IP:-$(cat /etc/agent5g/core_ip 2>/dev/null || true)}
 [[ $CORE_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "No sé la IP del core: CORE5G_CORE_IP=<IP> emparella-upf $NOM"; exit 1; }
 PORT=${CORE5G_ENLLAC_PORT:-9544}
 D="$CERTS/agent-upf-$NOM"
-[[ -f "$D/agent-upf.crt" ]] || bash "$SRC/gen_certs.sh" --upf "$NOM" "$CERTS" >/dev/null
+C="$D/agent-upf.crt"
+if (( NOU )) || [[ ! -f "$C" ]] \
+   || ! openssl verify -CAfile "$CERTS/ca/ca.crt" "$C" >/dev/null 2>&1 \
+   || ! openssl x509 -in "$C" -noout -checkend 2592000 >/dev/null 2>&1; then
+  bash "$SRC/gen_certs.sh" --upf "$NOM" "$CERTS" >/dev/null
+  echo "Certificat nou per al UPF $NOM (caduca $(openssl x509 -in "$C" -noout -enddate | cut -d= -f2))"
+fi
 printf '%s:%s\n' "$CORE_IP" "$PORT" > "$D/core"
 OUT="$CERTS/emparellament-upf-$NOM.txt"
 (

@@ -3,6 +3,7 @@
 # a install_radio.sh. S'executa al core, que és on hi ha la CA.
 #
 #   sudo emparella-radio <nom_de_la_ràdio> [carpeta_certs]      (per defecte /root/certs-5g)
+#   sudo emparella-radio --nou <nom>      (certificat nou: per renovar-lo a la ràdio amb sudo agent5g)
 #
 # El nom identifica la ràdio al panell (p. ex. aula2, radio1; lletres, xifres, . _ -).
 # NO cal saber la IP de la ràdio: és la ràdio qui truca al core (com la gNodeB a l'AMF).
@@ -10,6 +11,9 @@
 # core on ha de trucar. No porta mai ca.key. Es desa també a <certs>/emparellament-<nom>.txt.
 # IP del core: CORE5G_CORE_IP=... o la que va desar install_core.sh (/etc/agent5g/core_ip).
 set -euo pipefail
+# --nou: torna a emetre el certificat encara que ja n'hi hagi un (renovar-lo). També es renova
+# sol si caduca d'aquí a menys de 30 dies o si no és de la CA actual.
+NOU=0; a=(); for x in "$@"; do if [[ $x == --nou ]]; then NOU=1; else a+=("$x"); fi; done; set -- "${a[@]}"
 NOM=${1:?nom de la ràdio (p. ex. aula2)}
 CERTS=${2:-/root/certs-5g}
 [[ $EUID -eq 0 ]] || { echo "Executa amb sudo"; exit 1; }
@@ -21,9 +25,15 @@ CORE_IP=${CORE5G_CORE_IP:-$(cat /etc/agent5g/core_ip 2>/dev/null || true)}
 [[ $CORE_IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "No sé la IP del core: CORE5G_CORE_IP=<IP> emparella-radio $NOM"; exit 1; }
 PORT=${CORE5G_ENLLAC_PORT:-9544}
 D="$CERTS/agent-radio-$NOM"
-# certificat nou si no n'hi ha o si és d'abans de l'enllaç ràdio -> core (sense clientAuth)
-if [[ ! -f "$D/agent-radio.crt" ]] || ! openssl x509 -in "$D/agent-radio.crt" -noout -ext extendedKeyUsage 2>/dev/null | grep -q 'Client Authentication'; then
+# certificat nou si no n'hi ha, si es demana (--nou), si és d'abans de l'enllaç ràdio -> core
+# (sense clientAuth), si no és de la CA actual o si caduca d'aquí a menys de 30 dies
+C="$D/agent-radio.crt"
+if (( NOU )) || [[ ! -f "$C" ]] \
+   || ! openssl x509 -in "$C" -noout -ext extendedKeyUsage 2>/dev/null | grep -q 'Client Authentication' \
+   || ! openssl verify -CAfile "$CERTS/ca/ca.crt" "$C" >/dev/null 2>&1 \
+   || ! openssl x509 -in "$C" -noout -checkend 2592000 >/dev/null 2>&1; then
   bash "$SRC/gen_certs.sh" --radio "$NOM" "$CERTS" >/dev/null
+  echo "Certificat nou per a la ràdio $NOM (caduca $(openssl x509 -in "$C" -noout -enddate | cut -d= -f2))"
 fi
 printf '%s:%s\n' "$CORE_IP" "$PORT" > "$D/core"
 OUT="$CERTS/emparellament-$NOM.txt"

@@ -302,6 +302,13 @@ En cada radio o PC con UPF, `sudo agent5g` → *Cambiar la IP del core*. Actuali
 **No hace falta volver a emparejar**, porque el certificado de la radio sigue valiendo con la misma CA.
 `desinstala.sh` quita también el comando `agent5g`.
 
+**Renovar el certificado de una radio o de un UPF**: en el core, `sudo emparella-radio --nou <nombre>`
+(o `sudo emparella-upf --nou <nombre>`); en la radio o el PC del UPF, `sudo agent5g` → *Renovar el certificado*,
+y pegas el código. Instala la CA, el certificado y la clave nuevos (copia del anterior en `certs/bak-…`),
+actualiza la IP del core (y `CORE_IP` de la gNB si ha cambiado) y reinicia el agente. Con el mismo nombre, en el
+panel sigue siendo el mismo equipo. Sin `--nou`, `emparella-*` da el mismo certificado (solo renueva solo si caduca
+en menos de 30 días o no es de la CA actual). El certificado anterior no se revoca: sigue siendo válido hasta que caduca.
+
 **Actualizar desde GitHub**: en cualquier PC (core, radio o UPF), `sudo agent5g` → *Actualizar desde GitHub*
 descarga la última versión de `main` y la instala, con copia en `/var/lib/agent5g*/bak-…`. En el core ejecuta
 `actualitzar.sh` (agente, herramientas de emparejamiento, menú y panel web si está en ese PC). En la radio y el
