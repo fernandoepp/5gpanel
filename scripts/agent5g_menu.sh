@@ -9,6 +9,8 @@
 #   2) Cambiar la IP del core: .env, smf.yaml, códigos de emparejamiento, certificados
 #      (misma CA), panel y reinicio del core con la IP nueva
 #   3) Renovar los certificados (misma IP)
+#   4) Añadir una radio o un UPF: pide el nombre y muestra el código de emparejamiento que se
+#      pega en el instalador de ese PC (es lo mismo que sudo emparella-radio/-upf <nombre>)
 # En la radio o en el PC del UPF:
 #   1) Ver la configuración
 #   2) Cambiar la IP del core al que llama (y reiniciar lo que depende de ella)
@@ -115,6 +117,8 @@ veure_core() {
     info "agente:             $(systemctl is-active agent5g 2>/dev/null || true) · panel en el 9543, radios y UPF en el $(jget $CFG_A enllac port)"
     info "panel web:          ${pd:-no instalado}"
     info "CA y certificados:  ${certs:-no la encuentro}"
+    info "radios emparejadas: $(equips radio | tr '\n' ' ')"
+    info "UPF emparejados:    $(equips upf | tr '\n' ' ')"
     mostra_cert /etc/agent5g/certs/agent-core.crt
     [[ -n "$pd" ]] && mostra_cert "$pd/certs/panel5g-web.crt"
 }
@@ -222,6 +226,50 @@ canvia_ip_core() {
     echo "    Las radios y los PCs con UPF siguen llamando a ${vella:-la IP antigua}: en cada uno, ejecuta"
     echo "      sudo agent5g   ->  Cambiar la IP del core  ->  $nova"
     echo "    (no hace falta volver a emparejar: el certificado sigue valiendo)"
+}
+
+equips() {   # equips <radio|upf>: nombres ya emparejados (carpetas agent-<tipo>-<nombre> de la CA)
+    local certs d
+    certs="$(certs_core)"; [[ -n "$certs" ]] || return 0
+    for d in "$certs"/agent-"$1"-*/; do
+        [[ -f "$d/agent-$1.crt" ]] && { d="${d%/}"; echo "${d##*/agent-$1-}"; }
+    done
+    return 0
+}
+
+# Añade una radio o un UPF: emite su certificado (misma CA) y muestra el código de
+# emparejamiento con la IP del core. El equipo llama solo al core: no hace falta su IP.
+afegeix_equip() {   # afegeix_equip <radio|upf>
+    local tipus="$1" certs eina nom def n i=1 args=() lst
+    certs="$(certs_core)"; eina="/opt/agent5g/eines/emparella_$tipus.sh"
+    [[ -n "$certs" ]] || { avis "no encuentro la CA (ca/ca.key): no se pueden emitir certificados en este PC"; return 0; }
+    [[ -x "$eina" ]] || { avis "falta $eina: actualiza el agente (opción Actualizar desde GitHub)"; return 0; }
+    echo
+    if [[ $tipus == radio ]]; then echo "--- Añadir una radio ---"; else echo "--- Añadir un UPF ---"; fi
+    mapfile -t lst < <(equips "$tipus")
+    info "ya emparejados: ${lst[*]:-ninguno}"
+    while printf '%s\n' "${lst[@]}" | grep -qx "$tipus$i"; do i=$((i + 1)); done
+    def="$tipus$i"
+    pregunta "Nombre (letras, cifras, . _ -; así sale en el panel)" nom "$def"
+    [[ $nom =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "    Nombre no válido."; return 0; }
+    if printf '%s\n' "${lst[@]}" | grep -qx -- "$nom"; then
+        info "\"$nom\" ya existe: si no dices que sí, se vuelve a mostrar su código (mismo certificado, IP del core al día)"
+        si_no "¿Emito un certificado nuevo para \"$nom\" (el antiguo sigue valiendo hasta que caduque)?" && args+=(--nou)
+    fi
+    info "IP del core que llevará el código: $(ip_core_actual)"
+    "$eina" "${args[@]}" "$nom" "$certs" || { avis "no se ha podido generar el código"; return 0; }
+    echo
+    if [[ $tipus == radio ]]; then
+        info "En la radio: instala con core5g.sh (rol radio) y pega el código; si ya tiene agente:"
+        info "sudo agent5g > Renovar el certificado de la radio."
+    else
+        info "En el PC del UPF: instala con core5g.sh (rol UPF) y pega el código; si ya tiene agente:"
+        info "sudo agent5g > Renovar el certificado del UPF. En modo automático el core lo usará al conectar."
+    fi
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active' && ! ufw status 2>/dev/null | grep -q '^9544/tcp'; then
+        avis "ufw está activo y no deja pasar el 9544/tcp: sudo ufw allow 9544/tcp"
+    fi
+    return 0
 }
 
 # --- radio / UPF ---------------------------------------------------------------------------
@@ -433,7 +481,9 @@ while true; do
     case "$ROL" in
         core)  opcions+=("veure_core|Ver la configuración del core"
                          "canvia_ip_core|Cambiar la IP del core (y regenerar los certificados)"
-                         "renova|Renovar los certificados (misma IP)") ;;
+                         "renova|Renovar los certificados (misma IP)"
+                         "afegeix_radio|Añadir una radio (muestra su código de emparejamiento)"
+                         "afegeix_upf|Añadir un UPF (muestra su código de emparejamiento)") ;;
         radio) opcions+=("veure_radio|Ver la configuración de la radio"
                          "core_radio|Cambiar la IP del core al que llama la radio"
                          "cert_radio|Renovar el certificado de la radio (pegando el código del core)") ;;
@@ -462,6 +512,8 @@ while true; do
         core_upf)       canvia_core_client $CFG_U agent5g-upf "UPF" ;;
         cert_radio)     renova_cert_client $CFG_A agent5g radio ;;
         cert_upf)       renova_cert_client $CFG_U agent5g-upf upf ;;
+        afegeix_radio)  afegeix_equip radio ;;
+        afegeix_upf)    afegeix_equip upf ;;
         actualitza)     actualitza ;;
     esac
 done
