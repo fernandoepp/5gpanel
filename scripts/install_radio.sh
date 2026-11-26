@@ -1,42 +1,42 @@
 #!/usr/bin/env bash
 # ============================================================================
-# install_radio.sh - instal·la la part ràdio (PC2) tal com la descriu la guia de
-# desplegament (apartats 2 i 4): Docker, ocudu, docker-compose.yml i .env unificats,
-# imatge del gNodeB i arrencada; i, a més, l'agent del panell (agent5g) com a servei
-# que s'inicia sol i es reinicia sempre.
+# install_radio.sh - instala la parte radio (PC2) tal como la describe la guía de
+# despliegue (apartados 2 y 4): Docker, ocudu, docker-compose.yml y .env unificados,
+# imagen del gNodeB y arranque; y, además, el agente del panel (agent5g) como servicio
+# que arranca solo y se reinicia siempre.
 #
-# Ús:
-#   sudo ./install_radio.sh                       (pregunta el que falti)
-#   sudo ./install_radio.sh --emparellament codi.txt
+# Uso:
+#   sudo ./install_radio.sh                       (pregunta lo que falte)
+#   sudo ./install_radio.sh --emparejamiento codigo.txt
 #
-# La ràdio TRUCA AL CORE (com la gNodeB a l'AMF): l'agent del panell no escolta cap port,
-# obre ell les connexions cap al core (port 9544) i les manté; si la xarxa arriba tard o
-# cau, ho reintenta sol. Al core li és igual la IP de la ràdio: l'única IP fixa és la del core.
+# La radio LLAMA AL CORE (como la gNodeB al AMF): el agente del panel no escucha ningún puerto,
+# abre él las conexiones hacia el core (puerto 9544) y las mantiene; si la red llega tarde o
+# se cae, lo reintenta solo. Al core le da igual la IP de la radio: la única IP fija es la del core.
 #
-# Opcions:
-#   --core IP            IP del core (AMF). Per defecte, la que porta el codi d'emparellament
-#   --radio IP           IP d'aquest PC (per defecte, la de la ruta cap al core)
-#   --emparellament F    fitxer amb el codi d'emparellament (al core: sudo emparella-radio <nom>);
-#                        sense aquesta opció es demana que l'enganxis
-#   --ocudu DIR          on es clona ocudu (per defecte ~/ocudu de l'usuari)
-#   --sense-build        no construir la imatge ni arrencar el gNB (només configurar + agent)
-#   --sense-agent        no instal·lar l'agent del panell
-#   --forcar             tornar a instal·lar l'agent encara que ja hi sigui
+# Opciones:
+#   --core IP              IP del core (AMF). Por defecto, la que lleva el código de emparejamiento
+#   --radio IP             IP de este PC (por defecto, la de la ruta hacia el core)
+#   --emparejamiento F     fichero con el código de emparejamiento (en el core: sudo emparella-radio <nombre>);
+#                          sin esta opción se pide que lo pegues
+#   --ocudu DIR            dónde se clona ocudu (por defecto ~/ocudu del usuario)
+#   --sin-build            no construir la imagen ni arrancar el gNB (solo configurar + agente)
+#   --sin-agente           no instalar el agente del panel
+#   --forzar               volver a instalar el agente aunque ya esté
 #
-# Tornar-lo a executar no refà el que ja hi és: si l'agent ja està instal·lat no es toca
-# (per posar-ne la versió nova: desinstala.sh --radio i tornar a executar aquest script, o
-# --forcar). Si l'agent s'havia desinstal·lat, fa servir sol el certificat que es va desar
-# (/var/lib/agent5g/emparellament) i no cal tornar a enganxar el codi.
+# Volver a ejecutarlo no rehace lo que ya está: si el agente ya está instalado no se toca
+# (para poner la versión nueva: sudo agent5g > Actualizar desde GitHub, o desinstala.sh --radio y
+# volver a ejecutar este script, o --forzar). Si el agente se había desinstalado, usa solo el certificado
+# que se guardó (/var/lib/agent5g/emparellament) y no hace falta volver a pegar el código.
 #
-# Paràmetres de la cel·la (variables d'entorn; per defecte, els de la guia, Annex B):
+# Parámetros de la celda (variables de entorno; por defecto, los de la guía, Anexo B):
 #   PLMN=00101 TAC=1 SST=1 TX_GAIN=80 RX_GAIN=40 DL_ARFCN=470000 BAND=40
 #   BANDWIDTH_MHZ=20 SCS=30 SRATE=23.04 PCI=1 TX_ANTENA=1 RX_ANTENA=1
-#   Si el .env ja els té, es conserven els valors actuals.
+#   Si el .env ya los tiene, se conservan los valores actuales.
 #
-# Diferències amb la guia (perquè el panell pugui gestionar la ràdio):
-#   * el PLMN es diu PLMN_1 al .env (el panell hi afegeix PLMN_2 per al segon PLMN);
-#   * nombre d'antenes parametritzat (RX_ANTENA/TX_ANTENA, per defecte 1 = com a la guia);
-#   * el gNB s'arrenca en segon pla (-d): el log és a "docker logs -f ocudu_gnb".
+# Diferencias con la guía (para que el panel pueda gestionar la radio):
+#   * el PLMN se llama PLMN_1 en el .env (el panel añade PLMN_2 para el segundo PLMN);
+#   * número de antenas parametrizado (RX_ANTENA/TX_ANTENA, por defecto 1 = como en la guía);
+#   * el gNB se arranca en segundo plano (-d): el log está en "docker logs -f ocudu_gnb".
 # ============================================================================
 set -euo pipefail
 OCUDU_REPO="${OCUDU_REPO:-https://gitlab.com/ocudu/ocudu.git}"
@@ -44,7 +44,7 @@ CORE_IP=""; RADIO_IP=""; EMPAR=""; OCUDU=""; AMB_BUILD=1; AMB_AGENT=1; FORCAR=0
 
 pas()   { echo; echo "==> [$1] $2"; }
 info()  { echo "    $*"; }
-avis()  { echo "    AVÍS: $*"; }
+avis()  { echo "    AVISO: $*"; }
 error() { echo "ERROR: $*" >&2; exit 1; }
 es_ip() { [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 
@@ -52,55 +52,55 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --core)          CORE_IP="${2:?}"; shift ;;
         --radio)         RADIO_IP="${2:?}"; shift ;;
-        --emparellament) EMPAR="$(realpath "${2:?}")"; shift ;;
+        --emparellament|--emparejamiento) EMPAR="$(realpath "${2:?}")"; shift ;;
         --ocudu)         OCUDU="${2:?}"; shift ;;
-        --sense-build)   AMB_BUILD=0 ;;
-        --sense-agent)   AMB_AGENT=0 ;;
-        --forcar)        FORCAR=1 ;;
+        --sense-build|--sin-build)   AMB_BUILD=0 ;;
+        --sense-agent|--sin-agente)  AMB_AGENT=0 ;;
+        --forcar|--forzar)           FORCAR=1 ;;
         -h|--help)       sed -n '3,/^# =====/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
-        *)               error "opció desconeguda: $1" ;;
+        *)               error "opción desconocida: $1" ;;
     esac
     shift
 done
-[[ $EUID -eq 0 ]] || error "cal ser root: sudo $0"
+[[ $EUID -eq 0 ]] || error "hay que ser root: sudo $0"
 SRC=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
 USUARI="${SUDO_USER:-$(id -un)}"
 HOME_USUARI="$(getent passwd "$USUARI" | cut -d: -f6)"
 OCUDU="${OCUDU:-$HOME_USUARI/ocudu}"
 DOCKER_DIR="$OCUDU/docker"
 
-pregunta() {   # pregunta <text> <variable> [per defecte]
+pregunta() {   # pregunta <texto> <variable> [por defecto]
     local txt="$1" var="$2" def="${3:-}" r
     [[ -t 0 ]] || { printf -v "$var" '%s' "$def"; return; }
     read -r -p "    $txt${def:+ [$def]}: " r || true
     printf -v "$var" '%s' "${r:-$def}"
 }
 
-# agent ja instal·lat? Llavors no es toca (ni es demana el codi)
+# ¿agente ya instalado? Entonces no se toca (ni se pide el código)
 AGENT_JA=0; CORE_ENLLAC=""
 if (( AMB_AGENT && ! FORCAR )) && [[ -f /etc/systemd/system/agent5g.service && -f /etc/agent5g/agent5g.json ]] \
    && [[ "$(python3 -c 'import json;print(json.load(open("/etc/agent5g/agent5g.json")).get("role",""))' 2>/dev/null)" == radio ]]; then
     AGENT_JA=1; AMB_AGENT=0
     CORE_ENLLAC="$(python3 -c 'import json; c=json.load(open("/etc/agent5g/agent5g.json")); print("%s:%s" % (c["core"], c.get("core_port") or 9544) if c.get("core") else "")' 2>/dev/null || true)"
-    echo "    L'agent del panell ja està instal·lat: no es toca (versió nova: desinstala.sh --radio, o --forcar)."
+    echo "    El agente del panel ya está instalado: no se toca (versión nueva: sudo agent5g > Actualizar, o --forzar)."
 fi
 DESAT=/var/lib/agent5g/emparellament
-# codi d'emparellament (abans de la part lenta, per no haver d'esperar-se 40 minuts)
+# código de emparejamiento (antes de la parte lenta, para no tener que esperar 40 minutos)
 CODI=""; NOM_RADIO=""
 if (( AMB_AGENT )); then
     if [[ -z "$EMPAR" && -s "$DESAT/agent-radio.crt" && -s "$DESAT/core" ]]; then
-        # reinstal·lació després de desinstala.sh: el certificat i la IP del core ja hi són
+        # reinstalación después de desinstala.sh: el certificado y la IP del core ya están
         cn="$(openssl x509 -in "$DESAT/agent-radio.crt" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p')"
         n="${cn#agent-radio}"; n="${n#-}"; n="${n:-radio}"
         CODI="$( { echo "-----BEGIN 5GPANEL EMPARELLAMENT $n-----"
                    tar czf - -C "$DESAT" ca.crt agent-radio.crt agent-radio.key core | base64 -w 76
                    echo "-----END 5GPANEL EMPARELLAMENT-----"; } )"
-        echo "    Faig servir l'emparellament desat ($DESAT): ràdio \"$n\", core $(cat "$DESAT/core")"
+        echo "    Uso el emparejamiento guardado ($DESAT): radio \"$n\", core $(cat "$DESAT/core")"
     elif [[ -n "$EMPAR" ]]; then
         CODI="$(cat "$EMPAR")"
     elif [[ -t 0 ]]; then
-        echo "    Al core, executa:  sudo emparella-radio <nom_d_aquesta_radio>   (p. ex. aula2)"
-        echo "    i enganxa aquí el codi (de la línia BEGIN a la línia END):"
+        echo "    En el core, ejecuta:  sudo emparella-radio <nombre_de_esta_radio>   (p. ej. aula2)"
+        echo "    y pega aquí el código (de la línea BEGIN a la línea END):"
         while IFS= read -r l; do
             CODI+="$l"$'\n'
             [[ "$l" == "-----END 5GPANEL EMPARELLAMENT-----" ]] && break
@@ -108,34 +108,34 @@ if (( AMB_AGENT )); then
     fi
     NOM_RADIO="$(sed -n 's/^-----BEGIN 5GPANEL EMPARELLAMENT \([A-Za-z0-9_.-]*\)-----$/\1/p' <<<"$CODI" | head -1)"
     [[ -n "$NOM_RADIO" ]] \
-        || error "falta el codi d'emparellament d'aquesta ràdio. Genera'l al core amb: sudo emparella-radio <nom>"
+        || error "falta el código de emparejamiento de esta radio. Genéralo en el core con: sudo emparella-radio <nombre>"
     TMPC="$(mktemp -d)"; trap 'rm -rf "$TMPC"' EXIT
     sed -n '/^-----BEGIN/,/^-----END/{/^-----/d;p}' <<<"$CODI" | base64 -d | tar xzf - -C "$TMPC" \
-        || error "el codi d'emparellament està malmès (copia'l sencer)"
-    for f in ca.crt agent-radio.crt agent-radio.key; do [[ -s "$TMPC/$f" ]] || error "al codi hi falta $f"; done
+        || error "el código de emparejamiento está dañado (cópialo entero)"
+    for f in ca.crt agent-radio.crt agent-radio.key; do [[ -s "$TMPC/$f" ]] || error "al código le falta $f"; done
     openssl verify -CAfile "$TMPC/ca.crt" -purpose sslclient "$TMPC/agent-radio.crt" >/dev/null 2>&1 \
-        || error "el codi és d'abans de l'enllaç ràdio -> core o d'una altra CA: torna'l a generar al core (sudo emparella-radio $NOM_RADIO)"
-    [[ -s "$TMPC/core" ]] || error "el codi no porta la IP del core (és antic): torna'l a generar al core (sudo emparella-radio $NOM_RADIO)"
+        || error "el código es antiguo o de otra CA: vuelve a generarlo en el core (sudo emparella-radio $NOM_RADIO)"
+    [[ -s "$TMPC/core" ]] || error "el código no lleva la IP del core (es antiguo): vuelve a generarlo en el core (sudo emparella-radio $NOM_RADIO)"
     CORE_ENLLAC="$(tr -d '[:space:]' < "$TMPC/core")"
-    [[ "$CORE_ENLLAC" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || error "IP del core del codi invàlida: $CORE_ENLLAC"
-    info "codi d'emparellament correcte: ràdio \"$NOM_RADIO\", trucarà al core ${CORE_ENLLAC}"
+    [[ "$CORE_ENLLAC" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || error "IP del core del código no válida: $CORE_ENLLAC"
+    info "código de emparejamiento correcto: radio \"$NOM_RADIO\", llamará al core ${CORE_ENLLAC}"
 fi
 
-pas 0 "Dades de la ràdio"
-# --- 0. dades -----------------------------------------------------------------
+pas 0 "Datos de la radio"
+# --- 0. datos -----------------------------------------------------------------
 [[ -n "$CORE_IP" ]] || pregunta "IP del core (AMF, PC1)" CORE_IP "${CORE_ENLLAC%:*}"
 [[ -n "$CORE_IP" ]] || pregunta "IP del core (AMF, PC1)" CORE_IP "${CORE_IP_DEFECTE:-192.168.1.100}"
-es_ip "$CORE_IP" || error "IP del core invàlida: '$CORE_IP'"
+es_ip "$CORE_IP" || error "IP del core no válida: '$CORE_IP'"
 if [[ -z "$RADIO_IP" ]]; then
     det="$(ip -4 route get "$CORE_IP" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)"
-    pregunta "IP d'aquest PC (ràdio, PC2)" RADIO_IP "$det"
+    pregunta "IP de este PC (radio, PC2)" RADIO_IP "$det"
 fi
-es_ip "$RADIO_IP" || error "IP de la ràdio invàlida: '$RADIO_IP'"
-ip -4 -o addr show | grep -q " $RADIO_IP/" || error "$RADIO_IP no és una IP d'aquest PC"
-info "core $CORE_IP · ràdio $RADIO_IP · ocudu a $OCUDU"
+es_ip "$RADIO_IP" || error "IP de la radio no válida: '$RADIO_IP'"
+ip -4 -o addr show | grep -q " $RADIO_IP/" || error "$RADIO_IP no es una IP de este PC"
+info "core $CORE_IP · radio $RADIO_IP · ocudu en $OCUDU"
 
-# --- 1. programari (guia, apartat 2) -------------------------------------------
-pas 1 "git, curl i Docker"
+# --- 1. programas (guía, apartado 2) -------------------------------------------
+pas 1 "git, curl y Docker"
 falta=()
 command -v git  >/dev/null || falta+=(git)
 command -v curl >/dev/null || falta+=(curl)
@@ -143,41 +143,41 @@ command -v openssl >/dev/null || falta+=(openssl)
 command -v python3 >/dev/null || falta+=(python3)
 if (( ${#falta[@]} )); then
     apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${falta[@]}" >/dev/null
-    info "instal·lat: ${falta[*]}"
+    info "instalado: ${falta[*]}"
 fi
 if ! docker compose version >/dev/null 2>&1; then
     gd="$(mktemp)"
-    curl -fsSL --retry 3 https://get.docker.com -o "$gd" || error "no s'ha pogut descarregar get.docker.com"
-    sh "$gd" >/dev/null || error "no s'ha pogut instal·lar Docker"
+    curl -fsSL --retry 3 https://get.docker.com -o "$gd" || error "no se ha podido descargar get.docker.com"
+    sh "$gd" >/dev/null || error "no se ha podido instalar Docker"
     rm -f "$gd"
-    info "Docker instal·lat (get.docker.com)"
+    info "Docker instalado (get.docker.com)"
 fi
-id -nG "$USUARI" | grep -qw docker || { usermod -aG docker "$USUARI"; info "$USUARI afegit al grup docker (efectiu en tornar a entrar)"; }
+id -nG "$USUARI" | grep -qw docker || { usermod -aG docker "$USUARI"; info "$USUARI añadido al grupo docker (efectivo al volver a entrar)"; }
 info "$(docker --version)"
 
-# --- 2. projecte (guia, apartat 4.1) --------------------------------------------
-pas 2 "Projecte ocudu"
+# --- 2. proyecto (guía, apartado 4.1) --------------------------------------------
+pas 2 "Proyecto ocudu"
 if [[ -d "$OCUDU/.git" ]]; then
-    info "ja clonat a $OCUDU (no es toca el codi)"
+    info "ya clonado en $OCUDU (no se toca el código)"
 else
-    sudo -u "$USUARI" git clone -q "$OCUDU_REPO" "$OCUDU" || error "no s'ha pogut clonar $OCUDU_REPO"
-    info "clonat a $OCUDU"
+    sudo -u "$USUARI" git clone -q "$OCUDU_REPO" "$OCUDU" || error "no se ha podido clonar $OCUDU_REPO"
+    info "clonado en $OCUDU"
 fi
-[[ -f "$DOCKER_DIR/Dockerfile" ]] || error "no trobo $DOCKER_DIR/Dockerfile"
+[[ -f "$DOCKER_DIR/Dockerfile" ]] || error "no encuentro $DOCKER_DIR/Dockerfile"
 
-# --- 3. docker-compose.yml unificat (guia, apartat 4.2 i Annex A) ---------------
+# --- 3. docker-compose.yml unificado (guía, apartado 4.2 y Anexo A) ---------------
 pas 3 "docker/docker-compose.yml"
 C="$DOCKER_DIR/docker-compose.yml"
 if [[ -f "$C" && ! -f "$C.orig" ]] && ! grep -q 'container_name: ocudu_gnb' "$C"; then
-    cp -a "$C" "$C.orig"; info "original desat a $C.orig"
+    cp -a "$C" "$C.orig"; info "original guardado en $C.orig"
 elif [[ -f "$C" ]]; then
     cp -a "$C" "$C.$(date +%Y%m%d-%H%M%S).bak"
 fi
 cat > "$C" <<'YAML'
 # SPDX-FileCopyrightText: Copyright (C) 2021-2026 Software Radio Systems Limited
 # SPDX-License-Identifier: BSD-3-Clause-Open-MPI
-# Generat per install_radio.sh (guia de desplegament, Annex A): un únic servei, el gNB,
-# en mode host i amb tota la configuració aquí, parametritzada amb el .env.
+# Generado por install_radio.sh (guía de despliegue, Anexo A): un único servicio, el gNB,
+# en modo host y con toda la configuración aquí, parametrizada con el .env.
 services:
   gnb:
     container_name: ocudu_gnb
@@ -239,14 +239,14 @@ configs:
         autostart_stdout_metrics: true
         enable_json: true
       remote_control:
-        # només local: el WebSocket no té contrasenya i accepta ordres (quit, ssb_set...).
-        # L'agent del panell hi llegeix les mètriques per mòbil des d'aquest mateix PC.
+        # solo local: el WebSocket no tiene contraseña y acepta órdenes (quit, ssb_set...).
+        # El agente del panel lee aquí las métricas por móvil desde este mismo PC.
         bind_addr: 127.0.0.1
         enabled: true
       log:
         filename: /tmp/gnb.log
         all_level: warning
-        # RRC i NGAP a info: el panell hi llegeix quin RNTI té cada mòbil (mètriques per mòbil)
+        # RRC y NGAP en info: el panel lee qué RNTI tiene cada móvil (métricas por móvil)
         rrc_level: info
         ngap_level: info
       pcap:
@@ -258,14 +258,14 @@ volumes:
   gnb-storage:
 YAML
 chown "$USUARI": "$C"
-info "escrit (un sol servei gnb, network_mode: host, sense el 5gc integrat ni xarxes internes)"
+info "escrito (un solo servicio gnb, network_mode: host, sin el 5gc integrado ni redes internas)"
 
-# --- 4. .env (guia, apartat 4.3 i Annex B) ------------------------------------------
+# --- 4. .env (guía, apartado 4.3 y Anexo B) ------------------------------------------
 pas 4 "docker/.env"
 E="$DOCKER_DIR/.env"
 [[ -f "$E" ]] || touch "$E"
 [[ -f "$E.orig" ]] || cp -a "$E" "$E.orig"
-val() {   # val <VAR> <per defecte>: valor actual del .env > variable d'entorn > per defecte
+val() {   # val <VAR> <por defecto>: valor actual del .env > variable de entorno > por defecto
     local v; v="$(sed -n "s/^$1=//p" "$E" | tail -1)"
     [[ -n "$v" ]] || { [[ "$1" == PLMN_1 ]] && v="$(sed -n 's/^PLMN=//p' "$E" | tail -1)"; }
     echo "${v:-${!1:-$2}}"
@@ -276,94 +276,94 @@ declare -A V=(
   [BAND]="$(val BAND 40)" [BANDWIDTH_MHZ]="$(val BANDWIDTH_MHZ 20)" [SCS]="$(val SCS 30)"
   [SRATE]="$(val SRATE 23.04)" [PCI]="$(val PCI 1)" [TX_ANTENA]="$(val TX_ANTENA 1)" [RX_ANTENA]="$(val RX_ANTENA 1)"
 )
-[[ "${V[PLMN_1]}" =~ ^[0-9]{5,6}$ ]] || error "PLMN invàlid: ${V[PLMN_1]}"
+[[ "${V[PLMN_1]}" =~ ^[0-9]{5,6}$ ]] || error "PLMN no válido: ${V[PLMN_1]}"
 TMPE="$(mktemp)"
 cat > "$TMPE" <<ENV
 # ==========================================
-# CONFIGURACIÓ DE XARXA (MÀQUINES VIRTUALS)
+# CONFIGURACIÓN DE RED (MÁQUINAS VIRTUALES)
 # ==========================================
-# IP de la màquina on s'executa Open5GS (PC1)
+# IP de la máquina donde se ejecuta Open5GS (PC1)
 CORE_IP=$CORE_IP
-# IP d'aquesta mateixa màquina on s'executa el gNB (PC2)
+# IP de esta misma máquina donde se ejecuta el gNB (PC2)
 RADIO_IP=$RADIO_IP
 # ==========================================
-# IDENTIFICADORS DE XARXA 5G (CORE)
+# IDENTIFICADORES DE RED 5G (CORE)
 # ==========================================
 # PLMN = MCC + MNC del core (docker_open5gs/.env)
 PLMN_1=${V[PLMN_1]}
 TAC=${V[TAC]}
 SST=${V[SST]}
 # ==========================================
-# PARÀMETRES DE RADIOFREQÜÈNCIA (ETTUS B210)
+# PARÁMETROS DE RADIOFRECUENCIA (ETTUS B210)
 # ==========================================
-# Guanys de transmissió i recepció
+# Ganancias de transmisión y recepción
 TX_GAIN=${V[TX_GAIN]}
 RX_GAIN=${V[RX_GAIN]}
-# Freqüència (ARFCN) i banda (470000 = 2350 MHz, centre de la banda 40)
+# Frecuencia (ARFCN) y banda (470000 = 2350 MHz, centro de la banda 40)
 DL_ARFCN=${V[DL_ARFCN]}
 BAND=${V[BAND]}
-# Ample de banda i espaiat de subportadora
+# Ancho de banda y espaciado de subportadora
 BANDWIDTH_MHZ=${V[BANDWIDTH_MHZ]}
 SCS=${V[SCS]}
-# Taxa de mostreig per a l'ample de banda
+# Tasa de muestreo para el ancho de banda
 SRATE=${V[SRATE]}
-# Identificador físic de cel·la
+# Identificador físico de celda
 PCI=${V[PCI]}
-# Antenes (1 = SISO; 2 = MIMO 2x2, com a molt 20 MHz amb la B210)
+# Antenas (1 = SISO; 2 = MIMO 2x2, como mucho 20 MHz con la B210)
 RX_ANTENA=${V[RX_ANTENA]}
 TX_ANTENA=${V[TX_ANTENA]}
 # ==========================================
 ENV
-# la resta del .env (mètriques, Telegraf, Grafana...) es conserva tal qual, sense les claus d'aquí dalt
+# el resto del .env (métricas, Telegraf, Grafana...) se conserva tal cual, sin las claves de aquí arriba
 CLAUS='^(CORE_IP|RADIO_IP|PLMN|PLMN_1|TAC|SST|TX_GAIN|RX_GAIN|DL_ARFCN|BAND|BANDWIDTH_MHZ|SCS|SRATE|PCI|RX_ANTENA|TX_ANTENA)='
 awk -v c="$CLAUS" '
-  /^# =+$/ || /^# (CONFIGURACIÓ DE XARXA|IDENTIFICADORS DE XARXA|PARÀMETRES DE RADIOFREQ|IP de la màquina|IP d.aquesta mateixa|PLMN = MCC|Guanys de transmissió|Freqüència \(ARFCN\)|Ample de banda i espaiat|Taxa de mostreig|Identificador [Ff]ísic|Antenes \()/ { next }
+  /^# =+$/ || /^# (CONFIGURACI(Ó|O) DE (XARXA|RED)|IDENTIFICADOR(S|ES) DE (XARXA|RED)|PAR(À|Á)METROS? DE RADIOFREQ|PARÁMETROS DE RADIOFRECUENCIA|IP de la m(à|á)quina|IP d.aquesta mateixa|IP de esta misma|PLMN = MCC|Guanys de transmissió|Ganancias de transmisión|Freqüència \(ARFCN\)|Frecuencia \(ARFCN\)|Ample de banda i espaiat|Ancho de banda y espaciado|Taxa de mostreig|Tasa de muestreo|Identificador [Ff](í|i)sic|Antenes \(|Antenas \()/ { next }
   $0 ~ c { next }
   { print }' "$E" >> "$TMPE"
 cat "$TMPE" > "$E"; rm -f "$TMPE"
 chown "$USUARI": "$E"
 info "CORE_IP=$CORE_IP RADIO_IP=$RADIO_IP PLMN_1=${V[PLMN_1]} TAC=${V[TAC]} ARFCN=${V[DL_ARFCN]} n${V[BAND]} ${V[BANDWIDTH_MHZ]} MHz"
-info "comprova que el PLMN i el TAC són els del core (MCC+MNC i TAC de docker_open5gs/.env)"
+info "comprueba que el PLMN y el TAC son los del core (MCC+MNC y TAC de docker_open5gs/.env)"
 
-# --- 5. imatges de la FPGA de la B210 (guia, apartat 4.5) -------------------------------
-pas 5 "Imatges UHD de l'USRP"
+# --- 5. imágenes de la FPGA de la B210 (guía, apartado 4.5) -------------------------------
+pas 5 "Imágenes UHD del USRP"
 if compgen -G "/usr/share/uhd/images/usrp_b2*_fpga.bin" >/dev/null; then
-    info "ja hi són (/usr/share/uhd/images)"
+    info "ya están (/usr/share/uhd/images)"
 else
     command -v uhd_images_downloader >/dev/null \
         || { apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq uhd-host >/dev/null; }
     mkdir -p /usr/share/uhd/images
     uhd_images_downloader -t b2xx -i /usr/share/uhd/images >/dev/null \
-        && info "descarregades a /usr/share/uhd/images" \
-        || avis "no s'han pogut descarregar: executa 'sudo uhd_images_downloader -t b2xx' abans d'arrencar el gNB"
+        && info "descargadas en /usr/share/uhd/images" \
+        || avis "no se han podido descargar: ejecuta 'sudo uhd_images_downloader -t b2xx' antes de arrancar el gNB"
 fi
 
-# --- 6. imatge i arrencada (guia, apartats 4.4 i 4.5) ----------------------------------
+# --- 6. imagen y arranque (guía, apartados 4.4 y 4.5) ----------------------------------
 if (( AMB_BUILD )); then
-    pas 6 "Construcció de la imatge del gNB (la part lenta: ~40 min la primera vegada)"
-    info "el missatge 'pull access denied for ocudu/gnb' és normal: la imatge es construeix aquí"
-    (cd "$OCUDU" && docker compose -f docker/docker-compose.yml build) || error "la construcció de la imatge ha fallat"
-    pas 7 "Arrencada del gNB"
-    (cd "$OCUDU" && docker compose -f docker/docker-compose.yml up -d) || error "no s'ha pogut arrencar el gNB"
-    info "en marxa: docker logs -f ocudu_gnb"
+    pas 6 "Construcción de la imagen del gNB (la parte lenta: ~40 min la primera vez)"
+    info "el mensaje 'pull access denied for ocudu/gnb' es normal: la imagen se construye aquí"
+    (cd "$OCUDU" && docker compose -f docker/docker-compose.yml build) || error "la construcción de la imagen ha fallado"
+    pas 7 "Arranque del gNB"
+    (cd "$OCUDU" && docker compose -f docker/docker-compose.yml up -d) || error "no se ha podido arrancar el gNB"
+    info "en marcha: docker logs -f ocudu_gnb"
 else
-    info "sense construir ni arrencar (--sense-build): cd $OCUDU && sudo docker compose -f docker/docker-compose.yml build && sudo docker compose -f docker/docker-compose.yml up -d"
+    info "sin construir ni arrancar (--sin-build): cd $OCUDU && sudo docker compose -f docker/docker-compose.yml build && sudo docker compose -f docker/docker-compose.yml up -d"
 fi
 
-# --- 8. agent del panell -------------------------------------------------------------
+# --- 8. agente del panel -------------------------------------------------------------
 if (( AGENT_JA )); then
-    pas 8 "Agent del panell (agent5g)"
-    info "ja instal·lat: no es toca ($(systemctl is-active agent5g 2>/dev/null || true); truca al core ${CORE_ENLLAC:-?})"
+    pas 8 "Agente del panel (agent5g)"
+    info "ya instalado: no se toca ($(systemctl is-active agent5g 2>/dev/null || true); llama al core ${CORE_ENLLAC:-?})"
 fi
 install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
-git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
+git -C "$SRC" log -1 --format='%h · %cd (instalación)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 if (( AMB_AGENT )); then
-    pas 8 "Agent del panell (agent5g)"
+    pas 8 "Agente del panel (agent5g)"
     install -d -m 755 /opt/agent5g
     install -m 755 "$SRC/agent/agent5g.py" /opt/agent5g/agent5g.py
     install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
     install -m 600 "$TMPC/ca.crt" "$TMPC/agent-radio.crt" "$TMPC/agent-radio.key" /etc/agent5g/certs/
-    rm -rf "$DESAT"                      # l'emparellament desat ja és a /etc/agent5g
+    rm -rf "$DESAT"                      # el emparejamiento guardado ya está en /etc/agent5g
     PROJ="$DOCKER_DIR" NOM="$NOM_RADIO" CORE="$CORE_ENLLAC" python3 - <<'PY'
 import json, os
 f = '/etc/agent5g/agent5g.json'
@@ -373,8 +373,8 @@ if os.path.isfile(f):
         old = json.load(fh)
 ip = r'^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 cfg = {
-    'role': 'radio', 'name': old.get('name', f"Ràdio {os.environ['NOM']}"),
-    # la ràdio truca al core (enllaç ràdio -> core): no escolta cap port i li és igual la seva IP
+    'role': 'radio', 'name': old.get('name', f"Radio {os.environ['NOM']}"),
+    # la radio llama al core (enlace radio -> core): no escucha ningún puerto y le da igual su IP
     'listen': None, 'core': os.environ['CORE'].rsplit(':', 1)[0],
     'core_port': int(os.environ['CORE'].rsplit(':', 1)[1]),
     'cert': '/etc/agent5g/certs/agent-radio.crt', 'key': '/etc/agent5g/certs/agent-radio.key',
@@ -408,20 +408,20 @@ PY
     systemctl restart agent5g
     sleep 4
     if systemctl is-active -q agent5g; then
-        info "agent5g actiu (s'inicia sol en arrencar i es reinicia sempre): truca al core $CORE_ENLLAC"
-        info "certificats d'aquesta ràdio: /etc/agent5g/certs/ (ca.crt, agent-radio.crt, agent-radio.key)"
-        info "configuració de l'agent:     /etc/agent5g/agent5g.json   ·  registre: journalctl -u agent5g"
+        info "agent5g activo (arranca solo al encender y se reinicia siempre): llama al core $CORE_ENLLAC"
+        info "certificados de esta radio: /etc/agent5g/certs/ (ca.crt, agent-radio.crt, agent-radio.key)"
+        info "configuración del agente:   /etc/agent5g/agent5g.json   ·  registro: journalctl -u agent5g"
         if journalctl -u agent5g --since "-20s" --no-pager 2>/dev/null | grep -q "connectat al core"; then
-            info "connectat al core: la ràdio \"$NOM_RADIO\" ja surt al panell"
+            info "conectado al core: la radio \"$NOM_RADIO\" ya aparece en el panel"
         else
-            avis "encara no ha connectat amb el core $CORE_ENLLAC (ho reintenta sol). Mira: journalctl -u agent5g -n 20"
+            avis "todavía no ha conectado con el core $CORE_ENLLAC (lo reintenta solo). Mira: journalctl -u agent5g -n 20"
         fi
     else
-        avis "agent5g no ha arrencat: journalctl -u agent5g -n 30"
+        avis "agent5g no ha arrancado: journalctl -u agent5g -n 30"
     fi
 fi
 
 echo
-echo "==> Fet. Ràdio $RADIO_IP connectada al core $CORE_IP."
-echo "    Log del gNB:   docker logs -f ocudu_gnb   (ha de dir 'Connection to AMF ... completed')"
-echo "    Configuració:  $DOCKER_DIR/.env  (o des del panell, Paràmetres)"
+echo "==> Hecho. Radio $RADIO_IP conectada al core $CORE_IP."
+echo "    Log del gNB:   docker logs -f ocudu_gnb   (tiene que decir 'Connection to AMF ... completed')"
+echo "    Configuración: $DOCKER_DIR/.env  (o desde el panel, Parámetros)"

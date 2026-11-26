@@ -1,41 +1,41 @@
 #!/usr/bin/env bash
-# Genera una CA pròpia i els certificats del panell i dels dos agents.
+# Genera una CA propia y los certificados del panel y de los dos agentes.
 #   ./gen_certs.sh <IP_PC1_core> <IP_PC2_radio> [carpeta_sortida]
-# Ràdios (normalment ho fa emparella_radio.sh, al core):
-#   ./gen_certs.sh --radio <nom_radio> [carpeta_sortida]     -> <sortida>/agent-radio-<nom>/
-#   El nom identifica la ràdio (lletres, xifres, . _ -; p. ex. aula2). NO cal la IP: la ràdio
-#   truca al core (enllaç ràdio -> core) i s'identifica amb aquest certificat (CN agent-radio-<nom>).
-#   Si el nom és una IP, el certificat també val per a l'accés directe antic a aquella IP.
-#   (fa servir la CA que ja hi ha a <sortida>/ca; no en crea cap de nova)
-# PCs amb UPF separat (ho fa emparella_upf.sh, al core):
-#   ./gen_certs.sh --upf <nom_upf> [carpeta_sortida]           -> <sortida>/agent-upf-<nom>/
-# IP nova del core (ho fa el menú "sudo agent5g"): renova agent-core i el web del panell
-#   ./gen_certs.sh --renova <IP_nova_core> [carpeta_sortida]
-# Només core + panell (sense ràdio; les ràdios s'afegeixen després amb --radio):
-#   ./gen_certs.sh --core <IP_core> [carpeta_sortida]
+# Radios (normalmente lo hace emparella_radio.sh, en el core):
+#   ./gen_certs.sh --radio <nombre_radio> [carpeta_salida]   -> <salida>/agent-radio-<nombre>/
+#   El nombre identifica la radio (letras, cifras, . _ -; p. ej. aula2). NO hace falta la IP: la radio
+#   llama al core (enlace radio -> core) y se identifica con este certificado (CN agent-radio-<nombre>).
+#   Si el nombre es una IP, el certificado también vale para el acceso directo antiguo a esa IP.
+#   (usa la CA que ya hay en <salida>/ca; no crea ninguna nueva)
+# PCs con UPF separado (lo hace emparella_upf.sh, en el core):
+#   ./gen_certs.sh --upf <nombre_upf> [carpeta_salida]         -> <salida>/agent-upf-<nombre>/
+# IP nueva del core (lo hace el menú "sudo agent5g"): renueva agent-core y el web del panel
+#   ./gen_certs.sh --renova <IP_nueva_core> [carpeta_salida]
+# Solo core + panel (sin radio; las radios se añaden después con --radio):
+#   ./gen_certs.sh --core <IP_core> [carpeta_salida]
 # Resultat:
-#   <sortida>/ca/            ca.key (GUARDA-LA FORA DELS PCs) i ca.crt
-#   <sortida>/panel/         per a panel/certs (al PC on vagi el panell)
-#   <sortida>/agent-core/    per a /etc/agent5g/certs al PC1
-#   <sortida>/agent-radio/   per a /etc/agent5g/certs al PC2
-# Els certificats valen per a qualsevol ubicació del panell: cada agent porta la
-# seva IP LAN i també host.docker.internal/172.17.0.1 (quan el panell és al mateix PC).
+#   <salida>/ca/            ca.key (GUÁRDALA FUERA DE LOS PCs) y ca.crt
+#   <salida>/panel/         para panel/certs (en el PC donde vaya el panel)
+#   <salida>/agent-core/    para /etc/agent5g/certs en el PC1
+#   <salida>/agent-radio/   para /etc/agent5g/certs en el PC2
+# Los certificados valen para cualquier ubicación del panel: cada agente lleva su
+# IP LAN y también host.docker.internal/172.17.0.1 (cuando el panel está en el mismo PC).
 set -euo pipefail
 if [[ ${1:-} == --radio ]]; then
-  RADIO_NOM=${2:?nom de la ràdio nova}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
-  [[ $RADIO_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nom de ràdio invàlid: $RADIO_NOM (lletres, xifres, . _ -)"; exit 1; }
-  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
+  RADIO_NOM=${2:?nombre de la radio nueva}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
+  [[ $RADIO_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nombre de radio no válido: $RADIO_NOM (letras, cifras, . _ -)"; exit 1; }
+  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No encuentro la CA en $OUT/ca (ca.key y ca.crt)"; exit 1; }
   NOMES_RADIO=1
 elif [[ ${1:-} == --upf ]]; then
-  UPF_NOM=${2:?nom del UPF nou}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
-  [[ $UPF_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nom de UPF invàlid: $UPF_NOM (lletres, xifres, . _ -)"; exit 1; }
-  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
+  UPF_NOM=${2:?nombre del UPF nuevo}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
+  [[ $UPF_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nombre de UPF no válido: $UPF_NOM (letras, cifras, . _ -)"; exit 1; }
+  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No encuentro la CA en $OUT/ca (ca.key y ca.crt)"; exit 1; }
   NOMES_RADIO=2
 elif [[ ${1:-} == --renova ]]; then
-  # IP nova del core: es tornen a emetre el certificat de l'agent del core i el web del panell
-  # amb la mateixa CA (ràdios, UPF i navegadors que ja confien en la CA no s'han de tocar)
-  CORE_IP=${2:?IP nova del core}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
-  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
+  # IP nueva del core: se vuelven a emitir el certificado del agente del core y el web del panel
+  # con la misma CA (radios, UPF y navegadores que ya confían en la CA no se tienen que tocar)
+  CORE_IP=${2:?IP nueva del core}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
+  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No encuentro la CA en $OUT/ca (ca.key y ca.crt)"; exit 1; }
   NOMES_RADIO=3
 elif [[ ${1:-} == --core ]]; then
   NOMES_RADIO=0; CORE_IP=${2:?IP del core}; RADIO_IP=""; OUT=${3:-./certs-5g}
@@ -45,7 +45,7 @@ fi
 if [[ $NOMES_RADIO == 0 ]]; then
 if [[ ${1:-} != --core ]]; then
 CORE_IP=${1:?IP del PC1 (core)}
-RADIO_IP=${2:?IP del PC2 (ràdio)}
+RADIO_IP=${2:?IP del PC2 (radio)}
 OUT=${3:-./certs-5g}
 fi
 DIES=${CORE5G_CERT_DIES:-825}
@@ -62,7 +62,7 @@ if [[ $NOMES_RADIO == 0 && ! -f "$OUT/ca/ca.key" ]]; then
     -addext "keyUsage=critical,keyCertSign,cRLSign"
 fi
 
-# emet <nom> <CN> <ús: serverAuth|clientAuth> <SAN o buit> <carpeta>
+# emet <nombre> <CN> <uso: serverAuth|clientAuth> <SAN o vacío> <carpeta>
 emet() {
   local nom=$1 cn=$2 us=$3 san=$4 dir=$5 ext
   ext=$(mktemp)
@@ -85,24 +85,24 @@ if [[ $NOMES_RADIO == 3 ]]; then
   mkdir -p "$OUT/agent-core" "$OUT/panel"
   emet agent-core    agent-core  serverAuth "IP:$CORE_IP,$LOCAL" "$OUT/agent-core"
   emet panel5g-web   panel5g-web serverAuth "IP:$CORE_IP,DNS:localhost,IP:127.0.0.1" "$OUT/panel"
-  echo "Certificats de l'agent del core i del web del panell renovats per a $CORE_IP (mateixa CA)"
+  echo "Certificados del agente del core y del web del panel renovados para $CORE_IP (misma CA)"
   exit 0
 fi
 if [[ $NOMES_RADIO == 2 ]]; then
-  # PC amb UPF: com la ràdio, truca al core (client TLS) i s'identifica pel CN agent-upf-<nom>
+  # PC con UPF: como la radio, llama al core (cliente TLS) y se identifica por el CN agent-upf-<nombre>
   D="$OUT/agent-upf-$UPF_NOM"; mkdir -p "$D"
   emet agent-upf "agent-upf-$UPF_NOM" clientAuth "" "$D"
-  echo "Certificats del UPF $UPF_NOM a $D"
+  echo "Certificados del UPF $UPF_NOM en $D"
   exit 0
 fi
 if [[ $NOMES_RADIO == 1 ]]; then
   D="$OUT/agent-radio-$RADIO_NOM"; mkdir -p "$D"
   SAN=$LOCAL
   [[ $RADIO_NOM =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && SAN="IP:$RADIO_NOM,$LOCAL"
-  # clientAuth: la ràdio és client TLS quan truca al core; serverAuth: accés directe antic
-  # mateix nom de fitxers que la ràdio principal: install_agent.sh radio <carpeta> funciona igual
+  # clientAuth: la radio es cliente TLS cuando llama al core; serverAuth: acceso directo antiguo
+  # mismo nombre de ficheros que la radio principal: install_agent.sh radio <carpeta> funciona igual
   emet agent-radio "agent-radio-$RADIO_NOM" serverAuth,clientAuth "$SAN" "$D"
-  echo "Certificats de la ràdio $RADIO_NOM a $D"
+  echo "Certificados de la radio $RADIO_NOM en $D"
   exit 0
 fi
 emet panel5g-client panel5g     clientAuth ""                                             "$OUT/panel"
@@ -112,6 +112,6 @@ emet agent-core     agent-core  serverAuth "IP:$CORE_IP,$LOCAL"  "$OUT/agent-cor
 [[ -z $RADIO_IP ]] || emet agent-radio agent-radio serverAuth,clientAuth "IP:$RADIO_IP,$LOCAL" "$OUT/agent-radio"
 openssl rand -base64 48 > "$OUT/panel/panel5g-session.secret"
 
-echo "Certificats a $OUT"
-echo " - Importa $OUT/ca/ca.crt com a CA de confiança als navegadors del laboratori."
-echo " - Guarda $OUT/ca/ca.key fora dels PCs (USB): qui la tingui pot emetre clients vàlids."
+echo "Certificados en $OUT"
+echo " - Importa $OUT/ca/ca.crt como CA de confianza en los navegadores del laboratorio."
+echo " - Guarda $OUT/ca/ca.key fuera de los PCs (USB): quien la tenga puede emitir clientes válidos."

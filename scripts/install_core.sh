@@ -1,59 +1,59 @@
 #!/usr/bin/env bash
-# Instal·la NOMÉS l'agent del core (la crida core5g.sh), sense preguntes:
-#   agent5g (mTLS al port 9543 per al panell i al 9544 per a les ràdios, que hi truquen soles)
-#   + captura NGAP/SBI + model del mòbil (User-Agent),
-#   tots tres com a serveis systemd que es reinicien sempre (també després d'un reinici
-#   del PC, de Docker o del panell).
-# Al final imprimeix el CODI D'EMPARELLAMENT de cada ràdio (CORE5G_RADIOS="aula1 aula2" o,
-# si hi ha terminal, ho pregunta). Més endavant: sudo emparella-radio <nom>.
-# La IP del core (IP_LAN) és l'única que ha de ser fixa: les ràdios hi truquen.
+# Instala SOLO el agente del core (lo llama core5g.sh), sin preguntas:
+#   agent5g (mTLS en el puerto 9543 para el panel y en el 9544 para las radios, que llaman solas)
+#   + captura NGAP/SBI + modelo del móvil (User-Agent),
+#   los tres como servicios systemd que se reinician siempre (también tras un reinicio
+#   del PC, de Docker o del panel).
+# Al final imprime el CÓDIGO DE EMPAREJAMIENTO de cada radio (CORE5G_RADIOS="aula1 aula2" o,
+# si hay terminal, lo pregunta). Más adelante: sudo emparella-radio <nombre>.
+# La IP del core (IP_LAN) es la única que tiene que ser fija: las radios llaman a ella.
 #
-#   sudo ./install_core.sh <carpeta_docker_open5gs> <fitxer_compose> <IP_LAN> [carpeta_certs]
+#   sudo ./install_core.sh <carpeta_docker_open5gs> <fichero_compose> <IP_LAN> [carpeta_certs]
 #
-# carpeta_certs (per defecte /root/certs-5g): si no hi ha CA, se'n crea una (gen_certs.sh --core).
-# Hi queden també els certificats del panell (panel/), per quan s'instal·li.
-# Tornar-lo a executar és segur: no canvia els certificats existents.
+# carpeta_certs (por defecto /root/certs-5g): si no hay CA, se crea una (gen_certs.sh --core).
+# Ahí quedan también los certificados del panel (panel/), para cuando se instale.
+# Volver a ejecutarlo es seguro: no cambia los certificados existentes.
 set -euo pipefail
-PROJ=${1:?carpeta del projecte docker_open5gs}
-COMPOSE=${2:?fitxer compose (sa-deploy.yaml o sa-vonr-deploy.yaml)}
+PROJ=${1:?carpeta del proyecto docker_open5gs}
+COMPOSE=${2:?fichero compose (sa-deploy.yaml o sa-vonr-deploy.yaml)}
 IP=${3:?IP LAN del core}
 CERTS=${4:-/root/certs-5g}
-[[ $EUID -eq 0 ]] || { echo "Executa amb sudo"; exit 1; }
+[[ $EUID -eq 0 ]] || { echo "Ejecútalo con sudo"; exit 1; }
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 PORT=9543
-[[ -f "$PROJ/.env" && -f "$PROJ/$COMPOSE" ]] || { echo "No trobo $PROJ/.env o $PROJ/$COMPOSE"; exit 1; }
-[[ $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "IP invàlida: $IP"; exit 1; }
+[[ -f "$PROJ/.env" && -f "$PROJ/$COMPOSE" ]] || { echo "No encuentro $PROJ/.env o $PROJ/$COMPOSE"; exit 1; }
+[[ $IP =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "IP no válida: $IP"; exit 1; }
 info() { echo "    $*"; }
 
-# ---- 1. certificats
+# ---- 1. certificados
 if [[ ! -f "$CERTS/ca/ca.crt" ]]; then
   ( umask 077; bash "$SRC/scripts/gen_certs.sh" --core "$IP" "$CERTS" >/dev/null )
-  info "certificats nous a $CERTS (CA pròpia)"
+  info "certificados nuevos en $CERTS (CA propia)"
 else
-  info "certificats existents a $CERTS"
+  info "certificados existentes en $CERTS"
 fi
 [[ -f "$CERTS/agent-core/agent-core.crt" ]] \
-  || { echo "A $CERTS falta agent-core/: torna a generar-los amb gen_certs.sh --core $IP $CERTS"; exit 1; }
+  || { echo "En $CERTS falta agent-core/: vuelve a generarlos con gen_certs.sh --core $IP $CERTS"; exit 1; }
 
-# ---- 2. paquets (tshark sense preguntes: sense captura per a usuaris no root)
+# ---- 2. paquetes (tshark sin preguntas: sin captura para usuarios no root)
 if ! command -v tshark >/dev/null || ! command -v dumpcap >/dev/null; then
   echo "wireshark-common wireshark-common/install-setuid boolean false" | debconf-set-selections
   DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark >/dev/null
-  info "tshark instal·lat"
+  info "tshark instalado"
 fi
 command -v python3 >/dev/null || DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3 >/dev/null
 
-# ---- 3. agent
+# ---- 3. agente
 install -d -m 755 /opt/agent5g
 install -m 755 "$SRC/agent/agent5g.py" "$SRC/agent/ua_capture.py" /opt/agent5g/
 install -d -m 755 /opt/agent5g; install -m 755 "$SRC/scripts/agent5g_menu.sh" /opt/agent5g/agent5g_menu.sh; ln -sf /opt/agent5g/agent5g_menu.sh /usr/local/sbin/agent5g   # menú: sudo agent5g
-git -C "$SRC" log -1 --format='%h · %cd (instal·lació)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
+git -C "$SRC" log -1 --format='%h · %cd (instalación)' --date=format:'%Y-%m-%d %H:%M' > /opt/agent5g/VERSIO 2>/dev/null || true
 install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
 install -m 600 "$CERTS/agent-core/ca.crt" "$CERTS/agent-core/agent-core.crt" "$CERTS/agent-core/agent-core.key" /etc/agent5g/certs/
-# Configuració generada a partir del compose real: tots els seus contenidors es poden
-# veure; es poden recrear tots menys mongo/mysql (les bases de dades no es toquen).
+# Configuración generada a partir del compose real: todos sus contenedores se pueden
+# ver; se pueden recrear todos menos mongo/mysql (las bases de datos no se tocan).
 SERVEIS=$(cd "$PROJ" && docker compose -f "$COMPOSE" config --services 2>/dev/null | sort -u | tr '\n' ' ')
-[[ -n $SERVEIS ]] || { echo "docker compose config ha fallat a $PROJ/$COMPOSE"; exit 1; }
+[[ -n $SERVEIS ]] || { echo "docker compose config ha fallado en $PROJ/$COMPOSE"; exit 1; }
 PROJ="$PROJ" COMPOSE="$COMPOSE" SERVEIS="$SERVEIS" python3 - <<'PY'
 import json, os
 f = '/etc/agent5g/agent5g.json'
@@ -63,11 +63,11 @@ if os.path.isfile(f):
         old = json.load(fh)
 serveis = os.environ['SERVEIS'].split()
 ims = {'dns', 'mysql', 'rtpengine', 'pyhss', 'icscf', 'scscf', 'pcscf', 'smsc'}
-nucli = [s for s in serveis if s not in ims]          # els IMS els gestiona el bloc "voip"
+nucli = [s for s in serveis if s not in ims]          # los IMS los gestiona el bloque "voip"
 cfg = {
     'role': 'core', 'name': old.get('name', 'Core 5G'),
     'listen': '0.0.0.0', 'port': 9543,
-    # les ràdios truquen al core (enllaç ràdio -> core): al core li és igual la IP de la ràdio
+    # las radios llaman al core (enlace radio -> core): al core le da igual la IP de la radio
     'enllac': old.get('enllac') or {'listen': '0.0.0.0', 'port': 9544},
     'cert': '/etc/agent5g/certs/agent-core.crt', 'key': '/etc/agent5g/certs/agent-core.key',
     'ca': '/etc/agent5g/certs/ca.crt', 'allowed_client_cn': ['panel5g'],
@@ -82,7 +82,7 @@ cfg = {
     'ue_capture': {'dir': '/var/lib/agent5g/ngap'},
     'voip': {'permes': True, 'compose_file': 'sa-vonr-deploy.yaml'},
 }
-for k in ('pyhss', 'project_actions'):          # personalitzacions que es conserven
+for k in ('pyhss', 'project_actions'):          # personalizaciones que se conservan
     if k in old:
         cfg[k] = old[k]
 with open(f + '.nou', 'w') as fh:
@@ -90,7 +90,7 @@ with open(f + '.nou', 'w') as fh:
 os.chmod(f + '.nou', 0o600)
 os.replace(f + '.nou', f)
 PY
-info "agent: /etc/agent5g/agent5g.json ($(wc -w <<<"$SERVEIS") serveis a $COMPOSE)"
+info "agente: /etc/agent5g/agent5g.json ($(wc -w <<<"$SERVEIS") servicios en $COMPOSE)"
 install -m 644 "$SRC/agent/agent5g.service" "$SRC/agent/ngap-capture.service" "$SRC/agent/ua-capture.service" /etc/systemd/system/
 install -d /etc/systemd/system/agent5g.service.d
 printf '[Service]\nReadWritePaths=%s\n' "$PROJ" > /etc/systemd/system/agent5g.service.d/projecte.conf
@@ -98,35 +98,35 @@ systemctl daemon-reload
 systemctl enable --now ngap-capture ua-capture agent5g >/dev/null 2>&1
 systemctl restart ngap-capture ua-capture agent5g
 
-# ---- 4. eines d'emparellament (emparella-radio <nom>); la IP del core va dins del codi
+# ---- 4. herramientas de emparejamiento (emparella-radio <nombre>); la IP del core va dentro del código
 printf '%s\n' "$IP" > /etc/agent5g/core_ip
 install -d -m 755 /opt/agent5g/eines
 install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" "$SRC/scripts/emparella_upf.sh" /opt/agent5g/eines/
 ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
 ln -sf /opt/agent5g/eines/emparella_upf.sh /usr/local/sbin/emparella-upf
-# perquè emparella-radio/-upf trobin els certificats encara que no siguin a /root/certs-5g
+# para que emparella-radio/-upf encuentren los certificados aunque no estén en /root/certs-5g
 sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh /opt/agent5g/eines/emparella_upf.sh
 
 sleep 3
 for s in agent5g ngap-capture ua-capture; do
-  systemctl is-active -q "$s" && info "$s: actiu (s'inicia sol en arrencar i es reinicia sempre)" \
-    || echo "    AVÍS: $s no està actiu (journalctl -u $s)"
+  systemctl is-active -q "$s" && info "$s: activo (se inicia solo al arrancar y se reinicia siempre)" \
+    || echo "    AVISO: $s no está activo (journalctl -u $s)"
 done
-info "certificats del panell (per quan l'instal·lis): $CERTS/panel"
-info "$CERTS/ca/ca.key és la clau de la CA: no la copiïs enlloc (emparella-radio la necessita aquí)"
+info "certificados del panel (para cuando lo instales): $CERTS/panel"
+info "$CERTS/ca/ca.key es la clave de la CA: no la copies a ningún sitio (emparella-radio la necesita aquí)"
 
-# ---- 5. codi d'emparellament de les ràdios
+# ---- 5. código de emparejamiento de las radios
 RADIOS=${CORE5G_RADIOS:-}
-# core5g.sh ho fa ell al final de tot (CORE5G_EMPARELLAR_DESPRES=1), quan el panell ja és en marxa
+# core5g.sh lo hace él al final de todo (CORE5G_EMPARELLAR_DESPRES=1), cuando el panel ya está en marcha
 [[ ${CORE5G_EMPARELLAR_DESPRES:-0} == 1 ]] && exit 0
 if [[ -z $RADIOS && -t 0 ]]; then
-  read -r -p "    Nom de la ràdio (o ràdios, separats per espais; p. ex. aula1) a emparellar ara [buit = més tard]: " RADIOS || RADIOS=""
+  read -r -p "    Nombre de la radio (o radios, separados por espacios; p. ej. aula1) para emparejar ahora [vacío = más tarde]: " RADIOS || RADIOS=""
 fi
 for R in $RADIOS; do
-  /usr/local/sbin/emparella-radio "$R" "$CERTS" || echo "    AVÍS: no s'ha pogut emparellar $R"
+  /usr/local/sbin/emparella-radio "$R" "$CERTS" || echo "    AVISO: no se ha podido emparejar $R"
 done
-[[ -n $RADIOS ]] || info "per emparellar una ràdio més endavant: sudo emparella-radio <nom> (p. ex. aula1)"
-info "UPF en un altre PC: sudo emparella-upf <nom> (p. ex. upf1) i, en aquell PC, install_upf.sh amb el codi"
+[[ -n $RADIOS ]] || info "para emparejar una radio más adelante: sudo emparella-radio <nombre> (p. ej. aula1)"
+info "UPF en otro PC: sudo emparella-upf <nombre> (p. ej. upf1) y, en ese PC, install_upf.sh con el código"
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
-  info "AVÍS: ufw és actiu i no el toco. Perquè les ràdios hi puguin trucar: sudo ufw allow 9544/tcp comment agent5g-radios-upf"
+  info "AVISO: ufw está activo y no lo toco. Para que las radios puedan llamar: sudo ufw allow 9544/tcp comment agent5g-radios-upf"
 fi

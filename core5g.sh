@@ -440,23 +440,6 @@ menu_generica() {
 
     echo
     echo "   Extras de la genérica:"
-    echo "   · sin UPF: el núcleo no arranca su UPF (la pieza que lleva los datos de los"
-    echo "     móviles hacia internet); el SMF lo busca en otro PC (UPF remoto, puerto 8805/udp)."
-    if si_no "   ¿Instalar sin UPF (UPF en otro PC)?"; then
-        while true; do
-            preguntar "   IP del PC donde está el UPF remoto" i "${UPF_REMOT:-}"
-            es_ipv4 "$i" && break
-            echo "   IP no válida."
-        done
-        SENSE_UPF=1; UPF_REMOT="$i"
-        if [[ "$SUBVERSIO" == voip ]]; then
-            echo "   AVISO: con el UPF remoto, la voz (IMS) no funciona si este PC no tiene ruta hacia"
-            echo "          la red interna del UPF remoto; los datos sí funcionan."
-        fi
-    else
-        SENSE_UPF=0; UPF_REMOT=""
-    fi
-
     echo "   · panel5g: panel web (https://<IP>:8443) para ver el estado y cambiar parámetros,"
     echo "     más el agente del core que usa el panel (puerto 9543, con certificados)."
     if si_no "   ¿Instalar panel5g?"; then
@@ -468,6 +451,30 @@ menu_generica() {
         fi
     else
         AMB_PANELL=0
+    fi
+    echo "   · UPF en otro PC (la pieza que lleva los datos de los móviles hacia internet)."
+    if (( AMB_PANELL )); then
+        echo "     Con panel5g no hace falta decirlo aquí: si instalas el UPF con agente en otro PC"
+        echo "     (en este core: sudo emparella-upf <nombre>), llama a este core y el SMF pasa a"
+        echo "     usarlo solo (modo automático del panel). Mientras tanto se usa el UPF de aquí."
+        SENSE_UPF=0; UPF_REMOT=""
+    else
+        echo "     Sin panel5g el core no se entera solo: el SMF necesita la IP del PC del UPF"
+        echo "     (UPF remoto, puerto 8805/udp), instalado sin agente."
+        if si_no "   ¿Instalar sin UPF (UPF en otro PC)?"; then
+            while true; do
+                preguntar "   IP del PC donde está el UPF remoto" i "${UPF_REMOT:-}"
+                es_ipv4 "$i" && break
+                echo "   IP no válida."
+            done
+            SENSE_UPF=1; UPF_REMOT="$i"
+            if [[ "$SUBVERSIO" == voip ]]; then
+                echo "   AVISO: con el UPF remoto, la voz (IMS) no funciona si este PC no tiene ruta hacia"
+                echo "          la red interna del UPF remoto; los datos sí funcionan."
+            fi
+        else
+            SENSE_UPF=0; UPF_REMOT=""
+        fi
     fi
 }
 
