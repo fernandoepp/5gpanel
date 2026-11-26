@@ -25,6 +25,20 @@ la IP de la radio; **la única IP fija es la del core**. Ver «Enlace radio → 
 
 ## Instalación
 
+**Un solo instalador, en castellano: `core5g.sh`** (en la raíz del repositorio). Pregunta primero el rol del PC:
+
+```
+curl -fsSL https://raw.githubusercontent.com/fernandoepp/5gpanel/main/core5g.sh -o core5g.sh
+sudo bash core5g.sh
+```
+
+- **Core**: el menú de siempre (red, versión, instalar). El agente y el panel web son el extra «panel5g» de la versión genérica.
+- **Radio**: ejecuta `scripts/install_radio.sh` (Docker, ocudu, gNodeB) y pregunta si instala también el agente del panel. Con agente pide el código de emparejamiento.
+- **UPF**: ejecuta `scripts/install_upf.sh` y pregunta lo mismo. Sin agente, solo pide la IP del core, y el core se separa a mano (extra «sin UPF»).
+- **Desinstalar**: `scripts/desinstala.sh`.
+
+Lo que hace cada pieza por dentro:
+
 1. **Core**: `core5g.sh` (paso 12) llama a `scripts/install_core.sh`, que crea la CA e instala el agente del core
    (puerto 9543 para el panel y 9544 para las radios). Panel: `scripts/install_panel.sh` (ver más abajo).
 2. **Cada radio**: en el core `sudo emparella-radio <nombre>` (p. ej. `aula2`) y en la radio
@@ -34,7 +48,7 @@ la IP de la radio; **la única IP fija es la del core**. Ver «Enlace radio → 
 4. Importa `certs-5g/ca/ca.crt` como CA de confianza en los navegadores del laboratorio.
 
 Volver a ejecutar un instalador **solo instala lo que falta**: lo que ya está no se toca. Para poner la
-versión nueva de algo: `sudo bash scripts/desinstala.sh` (o `core5g.sh` → 5 «Desinstal·lar») y luego el
+versión nueva de algo: `sudo bash scripts/desinstala.sh` (o `core5g.sh` → Desinstalar) y luego el
 instalador otra vez (ver «Desinstalar y reinstalar»).
 
 ## Flujo de un cambio
