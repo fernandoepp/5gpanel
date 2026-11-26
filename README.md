@@ -285,7 +285,7 @@ de solo lectura y, al pasar el ratón por encima, avisan de que se cambian por t
 IP afecta a la vez a los certificados, al panel y a todo el core.
 
 En el core, `sudo agent5g` abre un menú:
-1. **Ver la configuración**: IP, carpetas y certificados, con su SAN y su caducidad.
+1. **Ver la configuración**: IP, carpetas, certificados (con su SAN y su caducidad) y las radios y UPF emparejados.
 2. **Cambiar la IP del core**. Si la IP nueva todavía no es de este PC y la IP fija viene de
    `/etc/netplan/90-core5g.yaml`, ofrece cambiarla también. Después hace lo siguiente:
    - en `.env`, cambia `DOCKER_HOST_IP` y también `UPF_ADVERTISE_IP` si era la misma IP;
@@ -297,6 +297,7 @@ En el core, `sudo agent5g` abre un menú:
 
    Antes de tocar cada fichero guarda una copia.
 3. **Renovar los certificados** con la misma IP.
+4. **Añadir una radio** / **5. Añadir un UPF**: pide el nombre (propone `radio1`, `upf1`…, el siguiente libre), emite el certificado con la misma CA y muestra el código de emparejamiento para pegar en el instalador de ese PC. Es lo mismo que `sudo emparella-radio <nombre>` / `sudo emparella-upf <nombre>`. Si el nombre ya existe, vuelve a mostrar su código o, si lo pides, emite uno nuevo.
 
 En cada radio o PC con UPF, `sudo agent5g` → *Cambiar la IP del core*. Actualiza `"core"` en
 `agent5g.json` y, en la radio, `CORE_IP` del `.env` de ocudu (y recrea la gNB). Después reinicia el agente.
