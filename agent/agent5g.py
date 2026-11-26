@@ -2975,7 +2975,10 @@ def upf_configura(data):
             args = compose_base() + ['up', '-d', '--no-deps'] + (['--force-recreate'] if canviat else []) + ['upf']
             rc, out = run(args, timeout=CFG['apply_timeout'])
             if rc != 0:
-                raise RuntimeError('docker compose up upf ha fallat: ' + out[-600:])
+                pista = (' — un altre contenidor ja fa servir el port (el UPF antic?): al PC del UPF, '
+                         'docker ps --filter publish=8805/udp, i atura\'l amb docker stop <nom> && '
+                         'docker update --restart=no <nom>') if 'port is already allocated' in out else ''
+                raise RuntimeError('docker compose up upf ha fallat: ' + out[-600:] + pista)
         print(f'agent5g: UPF actiu (SMF {nous["SMF_IP"]}, anunciant {nous["UPF_HOST_IP"]}'
               f'{", configuració nova" if canviat else ""})', flush=True)
     else:

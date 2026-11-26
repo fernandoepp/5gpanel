@@ -153,6 +153,17 @@ if docker inspect upf >/dev/null 2>&1; then
         info "UPF antiguo parado (el proyecto ${dir:-} se queda donde estaba)"
     fi
 fi
+# otros contenedores (p. ej. el upf_remot antiguo renombrado) que ocupen el PFCP 8805/udp:
+# con ellos en marcha el UPF nuevo no arranca ("port is already allocated")
+for c in $(docker ps --filter publish=8805/udp --format '{{.Names}}' 2>/dev/null); do
+    [[ "$c" == upf ]] && [[ "$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' upf 2>/dev/null)" == "$PROJ" ]] && continue
+    avis "el contenedor $c ocupa el puerto 8805/udp (PFCP): el UPF nuevo no podría arrancar"
+    r=s; [[ -t 0 ]] && read -r -p "    ¿Lo paro y le quito el arranque automático (no se borra)? [S/n]: " r
+    [[ "${r:-s}" =~ ^[sSyY]$ ]] || error "para $c (docker stop $c) y vuelve a ejecutarlo"
+    docker update --restart=no "$c" >/dev/null 2>&1 || true
+    docker stop "$c" >/dev/null || error "no he podido parar $c"
+    info "$c parado y sin arranque automático (para volver a usarlo: docker start $c)"
+done
 
 # --- 3. imagen docker_open5gs y ficheros del UPF ----------------------------------------
 pas 3 "Imagen docker_open5gs"
