@@ -2,7 +2,7 @@
 // Tot el contingut que ve dels agents (logs, valors) s'insereix amb textContent.
 
 const $ = (s) => document.querySelector(s);
-const VERSIO = 'v18';
+const VERSIO = 'v19';
 function mostraError(txt) {
   let d = document.getElementById('error-global');
   if (!d) { d = document.createElement('div'); d.id = 'error-global'; document.body.prepend(d); }

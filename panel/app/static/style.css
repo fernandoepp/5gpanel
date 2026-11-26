@@ -247,3 +247,11 @@ input.w9 { width: 9em; }
 .espectre-svg .hit { fill: transparent; cursor: crosshair; }
 .espectre-svg .canal-txt.fora { fill: var(--fg); }
 label.nomes-cli { cursor: help; }
+
+/* ---- selector d'idioma (i18n.js): a dalt a la dreta, sense banderes */
+#idioma { position: fixed; top: 12px; right: 16px; z-index: 50; display: flex; gap: 2px; padding: 3px;
+          background: var(--card-solid); border: 1px solid var(--line); border-radius: 8px; box-shadow: var(--ombra); }
+#idioma button { border: 0; background: transparent; color: var(--muted); font: 600 12px/1 inherit;
+                 padding: 6px 9px; border-radius: 6px; cursor: pointer; letter-spacing: .02em; }
+#idioma button:hover { color: var(--fg); background: var(--soft); }
+#idioma button.actiu { background: var(--accent); color: var(--accent-fg); }
