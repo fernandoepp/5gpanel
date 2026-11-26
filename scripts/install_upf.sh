@@ -20,6 +20,11 @@
 #   --xarxa CIDR         xarxa Docker del UPF (per defecte 172.23.0.0/24; UPF a .8)
 #   --projecte DIR       on es crea el projecte (per defecte /opt/upf5g)
 #   --forcar             tornar-lo a instal·lar encara que ja hi sigui (versió nova)
+#   --sense-agent        només el UPF, sense l'agent del panell: no cal codi, però sí la IP
+#                        del core (--core IP o es pregunta). El core s'ha de separar a mà
+#                        (core5g.sh, extra "sin UPF" amb la IP d'aquest PC) i les subxarxes
+#                        dels mòbils del .env han de coincidir amb les del core.
+#   --core IP            IP del core (només amb --sense-agent; amb agent ve dins del codi)
 #
 # Queda:
 #   /opt/upf5g/                    docker-compose.yml, .env, upf/ (upf.yaml i upf_init.sh)
@@ -33,6 +38,7 @@
 set -euo pipefail
 DKO_REPO="${DKO_REPO:-https://github.com/herlesupreeth/docker_open5gs}"
 EMPAR=""; IMATGE_TAR=""; IMATGE_DE=""; GNB_LOCAL=""; XARXA="172.23.0.0/24"; PROJ="/opt/upf5g"; FORCAR=0
+AMB_AGENT=1; CORE_IP=""
 
 pas()   { echo; echo "==> [$1] $2"; }
 info()  { echo "    $*"; }
@@ -48,6 +54,8 @@ while [[ $# -gt 0 ]]; do
         --xarxa)         XARXA="${2:?}"; shift ;;
         --projecte)      PROJ="${2:?}"; shift ;;
         --forcar)        FORCAR=1 ;;
+        --sense-agent)   AMB_AGENT=0 ;;
+        --core)          CORE_IP="${2:?}"; shift ;;
         -h|--help)       sed -n '3,/^# =====/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)               error "opció desconeguda: $1" ;;
     esac
@@ -59,17 +67,29 @@ USUARI="${SUDO_USER:-$(id -un)}"
 [[ "$XARXA" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.0/24$ ]] || error "--xarxa ha de ser una /24 (p. ex. 172.23.0.0/24)"
 UPF_IP="${XARXA%.0/24}.8"
 
-if (( ! FORCAR )) && [[ -f /etc/systemd/system/agent5g-upf.service && -f /etc/agent5g-upf/agent5g.json ]]; then
+if (( ! FORCAR && ! AMB_AGENT )) && [[ -f "$PROJ/docker-compose.yml" ]] && docker inspect upf >/dev/null 2>&1; then
+    echo "==> El UPF (sense agent) ja està instal·lat a $PROJ: no es toca res (--forcar per tornar-lo a fer)."
+    exit 0
+fi
+if (( ! FORCAR && AMB_AGENT )) && [[ -f /etc/systemd/system/agent5g-upf.service && -f /etc/agent5g-upf/agent5g.json ]]; then
     echo "==> El UPF ja està instal·lat en aquest PC: no es toca res."
     echo "    Estat: agent5g-upf $(systemctl is-active agent5g-upf 2>/dev/null || true) · journalctl -u agent5g-upf -n 20"
     echo "    Versió nova: sudo bash $(dirname "$0")/desinstala.sh --upf i torna a executar aquest script (o --forcar)."
     exit 0
 fi
 
-# --- 0. codi d'emparellament -------------------------------------------------------
-pas 0 "Codi d'emparellament"
+# --- 0. codi d'emparellament (o, sense agent, la IP del core) ---------------------------
 DESAT=/var/lib/agent5g-upf/emparellament
 CODI=""
+TMPC="$(mktemp -d)"; trap 'rm -rf "$TMPC"' EXIT
+if (( ! AMB_AGENT )); then
+    pas 0 "IP del core (UPF sense agent)"
+    if [[ -z "$CORE_IP" && -t 0 ]]; then read -r -p "    IP del core (on hi ha l'SMF): " CORE_IP || true; fi
+    [[ "$CORE_IP" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || error "IP del core invàlida: '$CORE_IP' (--core IP)"
+    NOM="upf"; CORE_ENLLAC="$CORE_IP:9544"
+    info "UPF sense agent: l'SMF del core $CORE_IP"
+else
+pas 0 "Codi d'emparellament"
 if [[ -z "$EMPAR" && -s "$DESAT/agent-upf.crt" && -s "$DESAT/core" ]]; then
     cn="$(openssl x509 -in "$DESAT/agent-upf.crt" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p')"
     n="${cn#agent-upf}"; n="${n#-}"; n="${n:-upf}"
@@ -89,7 +109,6 @@ elif [[ -t 0 ]]; then
 fi
 NOM="$(sed -n 's/^-----BEGIN 5GPANEL UPF \([A-Za-z0-9_.-]*\)-----$/\1/p' <<<"$CODI" | head -1)"
 [[ -n "$NOM" ]] || error "falta el codi d'emparellament del UPF. Genera'l al core amb: sudo emparella-upf <nom>"
-TMPC="$(mktemp -d)"; trap 'rm -rf "$TMPC"' EXIT
 sed -n '/^-----BEGIN/,/^-----END/{/^-----/d;p}' <<<"$CODI" | base64 -d | tar xzf - -C "$TMPC" \
     || error "el codi d'emparellament està malmès (copia'l sencer)"
 for f in ca.crt agent-upf.crt agent-upf.key core; do [[ -s "$TMPC/$f" ]] || error "al codi hi falta $f"; done
@@ -99,6 +118,7 @@ CORE_ENLLAC="$(tr -d '[:space:]' < "$TMPC/core")"
 [[ "$CORE_ENLLAC" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || error "IP del core del codi invàlida: $CORE_ENLLAC"
 CORE_IP="${CORE_ENLLAC%:*}"
 info "UPF \"$NOM\": trucarà al core $CORE_ENLLAC"
+fi
 
 # --- 1. programari -----------------------------------------------------------------
 pas 1 "git, curl, python3 i Docker"
@@ -269,6 +289,23 @@ chmod 600 "$E"
 (cd "$PROJ" && docker compose config -q) || error "el docker-compose.yml generat no és vàlid"
 info "gNB al mateix PC: $( ((GNB_LOCAL)) && echo "sí (N3 pel pont de Docker, $UPF_IP)" || echo "no (N3 per la IP del PC, 2152/udp publicat)")"
 (( REGLA_MAIN )) && info "ruta per defecte per $DEV_DEF (VPN): el trànsit dels mòbils sortirà per la LAN (ip rule)"
+
+# --- 5. sense agent: s'arrenca el UPF i prou ----------------------------------------------
+if (( ! AMB_AGENT )); then
+    pas 5 "Arrencada del UPF (sense agent)"
+    (cd "$PROJ" && docker compose -p upf5g up -d) || error "el UPF no ha arrencat: cd $PROJ && docker compose -p upf5g logs"
+    if (( REGLA_MAIN )) && ! ip rule show | grep -q "from $XARXA lookup main"; then
+        ip rule add from "$XARXA" lookup main priority 100 || true
+        avis "regla ip (from $XARXA lookup main) posada a mà: no es manté després d'un reinici"
+    fi
+    echo
+    echo "==> Fet. UPF arrencat a $PROJ (sense agent del panell)."
+    echo "    Ara, al core, fes que l'SMF faci servir aquest UPF: core5g.sh > versió genèrica > extra"
+    echo "    \"sin UPF\" amb la IP d'aquest PC (${IP_PC:-?}). Comprova que UE_IPV4_INTERNET i UE_IPV4_IMS"
+    echo "    de $PROJ/.env són les del .env del core."
+    echo "    Registre: docker logs -f upf"
+    exit 0
+fi
 
 # --- 5. agent ------------------------------------------------------------------------
 pas 5 "Agent del UPF (agent5g-upf)"
