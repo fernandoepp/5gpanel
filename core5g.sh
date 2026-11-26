@@ -50,6 +50,7 @@
 #   CORE5G_PANELL_REPO    repositorio git del agente y el panel (por defecto PANELL_REPO)
 #   CORE5G_PANELL_BRANCA  rama del repositorio (por defecto main)
 #   CORE5G_CERTS          CA y certificados del agente (por defecto /root/certs-5g)
+#   CORE5G_AUTO_CONTINUAR 1 = después del reinicio por Docker, la instalación sigue sola (por defecto, a mano)
 #   CORE5G_RADIOS         nombres de las radios a emparejar al terminar (p. ej. "radio1 aula2"; "-" = ninguna)
 #
 # Todo se instala en ~/core5g/<versión>/docker_open5gs del usuario que ejecuta
@@ -852,17 +853,27 @@ pas_programari() {
     echo
     echo "Docker Compose se acaba de instalar: hay que reiniciar el equipo para que todo quede activo"
     echo "(servicio de Docker y permisos del grupo docker para $USUARI)."
-    if si_no "¿Reiniciar ahora? La instalación continuará sola después del reinicio"; then
-        instal_lar_servei_continuacio
-        echo "Reiniciando... Cuando vuelvas a entrar, el progreso está en: sudo tail -f $REGISTRE"
-        sleep 3
-        reboot
-        exit 0
+    # Por defecto NO continúa solo después del reinicio: hay que volver a lanzar el script a mano.
+    # (CORE5G_AUTO_CONTINUAR=1 recupera la continuación automática con un servicio systemd.)
+    local seguir="sudo bash $(readlink -f "$0")"
+    if [[ "${CORE5G_AUTO_CONTINUAR:-0}" == 1 ]]; then
+        if si_no "¿Reiniciar ahora? La instalación continuará sola después del reinicio"; then
+            instal_lar_servei_continuacio
+            echo "Reiniciando... Cuando vuelvas a entrar, el progreso está en: sudo tail -f $REGISTRE"
+            sleep 3
+            reboot
+            exit 0
+        fi
     fi
     echo
     echo "La configuración se ha guardado en $CONF."
-    echo "Reinicia el equipo y vuelve a ejecutar:  sudo $0"
-    echo "(el menú recuperará la configuración; elige 3) Instalar)"
+    echo "Después del reinicio, vuelve a ejecutar:  $seguir"
+    echo "y elige 1) Core > 3) Instalar (el menú recupera la configuración; lo ya hecho no se repite)."
+    if si_no "¿Reiniciar ahora?"; then
+        echo "Reiniciando..."
+        sleep 3
+        reboot
+    fi
     exit 0
 }
 
