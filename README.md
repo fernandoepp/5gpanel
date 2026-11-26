@@ -281,6 +281,13 @@ En cada radio o PC con UPF, `sudo agent5g` → *Cambiar la IP del core*. Actuali
 **No hace falta volver a emparejar**, porque el certificado de la radio sigue valiendo con la misma CA.
 `desinstala.sh` quita también el comando `agent5g`.
 
+**Actualizar desde GitHub**: en cualquier PC (core, radio o UPF), `sudo agent5g` → *Actualizar desde GitHub*
+descarga la última versión de `main` y la instala, con copia en `/var/lib/agent5g*/bak-…`. En el core ejecuta
+`actualitzar.sh` (agente, herramientas de emparejamiento, menú y panel web si está en ese PC). En la radio y el
+UPF copia el agente y el menú, y reinicia el servicio; si no arranca, vuelve a la versión anterior. No toca el
+core 5G, la gNB, los certificados ni la configuración. Muestra la versión instalada y la nueva. Para otra rama:
+`sudo AGENT5G_BRANCA=<rama> agent5g`.
+
 ## Desinstalar y reinstalar
 `sudo bash scripts/desinstala.sh` (o `core5g.sh` → 5) muestra qué hay instalado en ese PC y quita lo que
 elijas: **agente del core** (agent5g, capturas, `emparella-*`), **panel web** (contenedor e imagen),
