@@ -8,15 +8,14 @@ ca: /certs/ca.crt
 client_cert: /certs/panel5g-client.crt
 client_key: /certs/panel5g-client.key
 
-# Panell al PC1 (core): l'agent local escolta només al pont de Docker
-# (172.17.0.1) i el de la ràdio a la LAN, amb ufw obert només a la IP del PC1.
-# Si el panell va al PC2, intercanvia-ho (radio -> host.docker.internal,
-# core -> https://<IP_PC1>:9543).
+# Panell al PC1 (core): parla amb l'agent del core (pont de Docker). Les RÀDIOS no van
+# aquí: són elles les que truquen a l'agent del core (port 9544) amb el certificat del codi
+# d'emparellament, i el panell les veu a través d'ell (no cal saber-ne la IP).
+# Si el panell va a un altre PC: core -> url: https://<IP_core>:9543
 agents:
   core:
     url: https://host.docker.internal:9543
-  radio:
-    url: https://192.168.2.101:9543
+  # Ràdio antiga que encara escolta (sense enllaç): radio: {url: https://<IP_radio>:9543}
 
 # Usuaris. Genera el hash amb:
 #   docker compose run --rm panel5g python -m app.hashpw
@@ -35,6 +34,9 @@ estat_logs:
     - {etiqueta: "UE registrats (AMF)",     contenidor: amf, regex: "Number of AMF-UEs is now (\\d+)"}
     - {etiqueta: "Sessions PDU (SMF)",      contenidor: smf, regex: "Number of SMF-Sessions is now (\\d+)"}
     - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\d+)"}
+  upf:
+    - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\d+)"}
+    - {etiqueta: "PFCP amb l'SMF",          contenidor: upf, regex: "(PFCP (?:de-)?associated.*)$"}
   radio:
     - {etiqueta: "N2 amb l'AMF",            contenidor: ocudu_gnb, regex: "Connection to AMF.*completed"}
     - {etiqueta: "Cel·la",                  contenidor: ocudu_gnb, regex: "(Cell pci=.*)$"}

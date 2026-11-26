@@ -113,6 +113,17 @@ def rules_cross(envs, errors, warnings):
     if cip and hip and cip != hip:
         warnings.append(f'CORE_IP del gNB ({cip}) diferent de la IP del core ({hip}): '
                         'el gNB no trobarà l\'AMF.')
+    ctac, rtac = core.get('TAC'), radio.get('TAC')
+    if ctac:
+        tacs = [t.strip() for t in str(ctac).split(',') if t.strip()]
+        if any(t.isdigit() and int(t) > 16777215 for t in tacs):
+            errors.append('Un codi d\'àrea és de 24 bits: com a màxim 16777215.')
+        if len(set(tacs)) != len(tacs):
+            warnings.append('Hi ha codis d\'àrea repetits a la llista del core.')
+        if rtac and str(rtac).strip().isdigit() and tacs and all(t.isdigit() for t in tacs) \
+                and int(rtac) not in {int(t) for t in tacs}:
+            warnings.append(f'El codi d\'àrea del gNB ({rtac}) no és cap dels que accepta el core ({", ".join(tacs)}): '
+                            'l\'AMF rebutjarà el gNB ("Cannot find Served TAI").')
     mcc, mnc, plmn = core.get('MCC'), core.get('MNC'), radio.get('PLMN_1')
     core_plmns = [p for p in (f'{mcc}{mnc}' if mcc and mnc else None,
                               f'{core["MCC_2"]}{core["MNC_2"]}' if core.get('MCC_2') and core.get('MNC_2') else None) if p]

@@ -97,7 +97,7 @@ def _peer_cn(r):
 def _check_peer(r):
     """Només acceptem agents: certificat de la CA (ja verificat pel TLS) amb CN agent-core o agent-radio*."""
     cn = _peer_cn(r) or ''
-    if not (cn == 'agent-core' or cn.startswith('agent-radio')):
+    if not (cn == 'agent-core' or cn.startswith('agent-radio') or cn.startswith('agent-upf')):
         raise httpx.ConnectError(f'certificat no és d\'un agent (CN={cn or "?"})')
     return cn
 
@@ -233,7 +233,7 @@ async def descobreix():
             def_t = ('Ràdio' if h['role'] == 'radio' else 'Core') + f' {ip}'
             AGENTS[nom] = {'url': url, 'rol': h['role'], 'descobert': True, 'ip': ip,
                            'titol': str(h.get('nom') or def_t)[:60]}
-        for nom in [n for n, a in AGENTS.items() if a['descobert'] and n not in trobats]:
+        for nom in [n for n, a in AGENTS.items() if a['descobert'] and not a.get('via') and n not in trobats]:
             _FALLADES[nom] += 1
             if _FALLADES[nom] >= 3:
                 AGENTS.pop(nom, None)
@@ -242,6 +242,84 @@ async def descobreix():
     finally:
         DESC['en_curs'] = False
     return DESC
+
+
+# ---------------------------------------------------------------- ràdios que truquen al core
+# Arquitectura principal: la ràdio truca al core (com la gNodeB a l'AMF). L'agent del core
+# té les ràdios connectades (GET /radios) i hi reenvia les peticions (/radio/<id>/...).
+# Al panell li és igual la IP de la ràdio: només parla amb l'agent del core.
+ENLLAC = {'darrera': None, 'errors': {}}
+_ENLLAC_FALLADES = defaultdict(int)
+
+
+async def radios_enllac():
+    vistes = set()
+    cores = [(t, a) for t, a in list(AGENTS.items()) if a['rol'] == 'core' and not a.get('via')]
+    for t, a in cores:
+        try:
+            r = await agent(t, 'GET', '/radios', 'enllac', timeout=8.0)
+        except HTTPException as e:
+            ENLLAC['errors'][t] = str(e.detail)
+            continue
+        ENLLAC['errors'].pop(t, None)
+        for rd in r.get('radios') or []:
+            rid = str(rd.get('id') or '')
+            if not NAME_RE.match(rid) or not rd.get('connectada'):
+                continue
+            nom = f'radio-{rid}'
+            vistes.add(nom)
+            _ENLLAC_FALLADES.pop(nom, None)
+            ant = AGENTS.get(nom)
+            AGENTS[nom] = {'url': a['url'].rstrip('/') + f'/radio/{rid}', 'rol': 'radio', 'descobert': True,
+                           'via': t, 'ip': rd.get('ip'), 'id': rid, 'des_de': rd.get('des_de'),
+                           'titol': ant['titol'] if ant and ant.get('via') == t else f'Ràdio {rid}'}
+            if not ant or ant.get('via') != t:      # nom visible ("name" de l'agent de la ràdio)
+                try:
+                    h = await agent(nom, 'GET', '/health', 'enllac', timeout=8.0)
+                    if h.get('nom'):
+                        AGENTS[nom]['titol'] = str(h['nom'])[:60]
+                except HTTPException:
+                    pass
+        # PCs amb UPF: també truquen al core (agent-upf-<nom>); es veuen com equips "upf"
+        try:
+            ru = await agent(t, 'GET', '/upfs', 'enllac', timeout=8.0)
+        except HTTPException:
+            ru = {}
+        for u in ru.get('upfs') or []:
+            uid = str(u.get('id') or '')
+            if not NAME_RE.match(uid) or not u.get('connectat'):
+                continue
+            nom = f'upf-{uid}'
+            vistes.add(nom)
+            _ENLLAC_FALLADES.pop(nom, None)
+            ant = AGENTS.get(nom)
+            AGENTS[nom] = {'url': a['url'].rstrip('/') + f'/upf/{uid}', 'rol': 'upf', 'descobert': True,
+                           'via': t, 'ip': u.get('ip'), 'id': uid, 'des_de': u.get('des_de'),
+                           'titol': ant['titol'] if ant and ant.get('via') == t else f'UPF {uid}'}
+            if not ant or ant.get('via') != t:
+                try:
+                    h = await agent(nom, 'GET', '/health', 'enllac', timeout=8.0)
+                    if h.get('nom'):
+                        AGENTS[nom]['titol'] = str(h['nom'])[:60]
+                except HTTPException:
+                    pass
+    # una ràdio (o UPF) que ja no hi és desapareix al cap de 2 consultes (uns 20 s)
+    for nom in [n for n, a in AGENTS.items() if a.get('via') and n not in vistes]:
+        _ENLLAC_FALLADES[nom] += 1
+        if _ENLLAC_FALLADES[nom] >= 2:
+            AGENTS.pop(nom, None)
+            _ENLLAC_FALLADES.pop(nom, None)
+    ENLLAC['darrera'] = time.time()
+
+
+async def _bucle_enllac():
+    await asyncio.sleep(1)
+    while True:
+        try:
+            await radios_enllac()
+        except Exception:  # noqa: BLE001 - mai ha de tombar el panell
+            pass
+        await asyncio.sleep(10)
 
 
 async def _bucle_descobriment():
@@ -280,7 +358,10 @@ async def security_headers(request: Request, call_next):
 
 @app.on_event('startup')
 async def _arrenca():
-    if DESC_CFG.get('actiu', True):
+    app.state.enllac = asyncio.create_task(_bucle_enllac())
+    # la cerca per la xarxa (el panell busca agents que escolten) ja no cal amb l'enllaç
+    # ràdio -> core; només si es demana a panel.yaml (descobriment: {actiu: true}).
+    if DESC_CFG.get('actiu', False):
         app.state.desc = asyncio.create_task(_bucle_descobriment())
 
 
@@ -344,13 +425,17 @@ async def me(s=Depends(current_user)):
 @app.get('/api/equips')
 async def equips(s=Depends(current_user)):
     return {'equips': [{'desti': t, 'rol': a['rol'], 'titol': a['titol'], 'descobert': a['descobert'],
-                        'ip': a['ip']} for t, a in AGENTS.items()],
-            'descobriment': {**DESC, 'actiu': bool(DESC_CFG.get('actiu', True))}}
+                        'ip': a['ip'], 'enllac': bool(a.get('via')), 'des_de': a.get('des_de')}
+                       for t, a in AGENTS.items()],
+            'descobriment': {**DESC, 'actiu': bool(DESC_CFG.get('actiu', False))},
+            'enllac': {'darrera': ENLLAC['darrera'], 'errors': ENLLAC['errors']}}
 
 
 @app.post('/api/equips/descobreix')
 async def equips_descobreix(s=Depends(admin)):
-    await descobreix()
+    await radios_enllac()
+    if DESC_CFG.get('actiu', False):
+        await descobreix()
     return await equips(s)
 
 
@@ -441,6 +526,20 @@ async def _validate(t, changes, user):
         else:
             res['warnings'] += [w for w in r['warnings'] if w not in res['warnings']]
     return vals, res or validate(SCHEMA, rol(t), vals, changes, {})
+
+
+@app.get('/api/radio/bandes')
+async def radio_bandes(s=Depends(current_user)):
+    """Bandes per al selector d'espectre (Paràmetres > Ràdio)."""
+    sch = SCHEMA.get('radio', {})
+    bs = sch.get('bandes') or {}
+    sel = [int(n) for n in (sch.get('espectre') or [28, 40, 77, 78]) if n in bs or str(n) in bs]
+    out = {}
+    for n in sel:
+        b = bs.get(n) or bs.get(str(n))
+        out[n] = {'duplex': b.get('duplex'), 'dl_mhz': b['dl_mhz'], 'ul_mhz': b.get('ul_mhz'),
+                  'scs': b.get('scs'), 'ample_min': b.get('ample_min', 5)}
+    return {'espectre': sel, 'bandes': out}
 
 
 @app.get('/api/radio/calcula')
@@ -657,6 +756,50 @@ async def restore(t: str, request: Request, s=Depends(admin)):
         if svc not in PENDING[t]:
             PENDING[t].append(svc)
     return {**r, 'pendents': PENDING[t]}
+
+
+# ---------------------------------------------------------------- UPF separat
+# El PC del UPF truca al core (com la ràdio). El panell només parla amb l'agent del core:
+# GET /upf (mode, UPF connectats, PFCP) i /upf/<id>/upf_estat (mètriques per HTTP del UPF).
+def _core_de(t):
+    if t not in AGENTS or AGENTS[t]['rol'] != 'core':
+        raise HTTPException(404, 'cal un core')
+    return t
+
+
+@app.get('/api/upf/{t}')
+async def get_upf(t: str, s=Depends(current_user)):
+    _core_de(t)
+    st = await agent(t, 'GET', '/upf', s['user'], timeout=30.0)
+    con = [u for u in st.get('upfs') or [] if u.get('connectat') and NAME_RE.match(str(u.get('id') or ''))]
+    res = await asyncio.gather(*(_safe(agent(t, 'GET', f"/upf/{u['id']}/upf_estat", s['user'], timeout=20.0), None)
+                                 for u in con))
+    for u, (d, err) in zip(con, res):
+        u['estat'], u['error'] = d, err
+    return st
+
+
+@app.post('/api/upf/{t}')
+async def post_upf(t: str, request: Request, s=Depends(admin)):
+    _core_de(t)
+    body = await request.json()
+    acc = body.get('accio')
+    if acc not in ('separa', 'ajunta', 'auto'):
+        raise HTTPException(400, 'acció invàlida')
+    cos = {'accio': acc}
+    if acc == 'separa':
+        if body.get('upf_id'):
+            if not NAME_RE.match(str(body['upf_id'])):
+                raise HTTPException(400, 'UPF invàlid')
+            cos['upf_id'] = str(body['upf_id'])
+        else:
+            try:
+                cos['ip'] = str(ipaddress.IPv4Address(str(body.get('ip', '')).strip()))
+            except ValueError:
+                raise HTTPException(400, 'IP del UPF invàlida')
+    if acc == 'auto':
+        cos['valor'] = bool(body.get('valor'))
+    return await agent(t, 'POST', '/upf', s['user'], timeout=float(CFG.get('apply_timeout', 300)) + 60, json=cos)
 
 
 @app.post('/api/project/{t}')

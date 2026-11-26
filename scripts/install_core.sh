@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Instal·la NOMÉS l'agent del core (la crida core5g.sh), sense preguntes:
-#   agent5g (mTLS al port 9543) + captura NGAP/SBI + model del mòbil (User-Agent),
+#   agent5g (mTLS al port 9543 per al panell i al 9544 per a les ràdios, que hi truquen soles)
+#   + captura NGAP/SBI + model del mòbil (User-Agent),
 #   tots tres com a serveis systemd que es reinicien sempre (també després d'un reinici
 #   del PC, de Docker o del panell).
-# Al final imprimeix el CODI D'EMPARELLAMENT de cada ràdio (CORE5G_RADIOS="IP1 IP2" o,
-# si hi ha terminal, ho pregunta). Més endavant: sudo emparella-radio <IP>.
+# Al final imprimeix el CODI D'EMPARELLAMENT de cada ràdio (CORE5G_RADIOS="aula1 aula2" o,
+# si hi ha terminal, ho pregunta). Més endavant: sudo emparella-radio <nom>.
+# La IP del core (IP_LAN) és l'única que ha de ser fixa: les ràdios hi truquen.
 #
 #   sudo ./install_core.sh <carpeta_docker_open5gs> <fitxer_compose> <IP_LAN> [carpeta_certs]
 #
@@ -63,6 +65,8 @@ nucli = [s for s in serveis if s not in ims]          # els IMS els gestiona el 
 cfg = {
     'role': 'core', 'name': old.get('name', 'Core 5G'),
     'listen': '0.0.0.0', 'port': 9543,
+    # les ràdios truquen al core (enllaç ràdio -> core): al core li és igual la IP de la ràdio
+    'enllac': old.get('enllac') or {'listen': '0.0.0.0', 'port': 9544},
     'cert': '/etc/agent5g/certs/agent-core.crt', 'key': '/etc/agent5g/certs/agent-core.key',
     'ca': '/etc/agent5g/certs/ca.crt', 'allowed_client_cn': ['panel5g'],
     'project_dir': os.environ['PROJ'], 'env_file': '.env',
@@ -94,12 +98,14 @@ systemctl daemon-reload
 systemctl enable --now ngap-capture ua-capture agent5g >/dev/null 2>&1
 systemctl restart ngap-capture ua-capture agent5g
 
-# ---- 4. eines d'emparellament (emparella-radio <IP>)
+# ---- 4. eines d'emparellament (emparella-radio <nom>); la IP del core va dins del codi
+printf '%s\n' "$IP" > /etc/agent5g/core_ip
 install -d -m 755 /opt/agent5g/eines
-install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
+install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" "$SRC/scripts/emparella_upf.sh" /opt/agent5g/eines/
 ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
-# perquè emparella-radio trobi els certificats encara que no siguin a /root/certs-5g
-sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh
+ln -sf /opt/agent5g/eines/emparella_upf.sh /usr/local/sbin/emparella-upf
+# perquè emparella-radio/-upf trobin els certificats encara que no siguin a /root/certs-5g
+sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh /opt/agent5g/eines/emparella_upf.sh
 
 sleep 3
 for s in agent5g ngap-capture ua-capture; do
@@ -111,10 +117,16 @@ info "$CERTS/ca/ca.key és la clau de la CA: no la copiïs enlloc (emparella-rad
 
 # ---- 5. codi d'emparellament de les ràdios
 RADIOS=${CORE5G_RADIOS:-}
+# core5g.sh ho fa ell al final de tot (CORE5G_EMPARELLAR_DESPRES=1), quan el panell ja és en marxa
+[[ ${CORE5G_EMPARELLAR_DESPRES:-0} == 1 ]] && exit 0
 if [[ -z $RADIOS && -t 0 ]]; then
-  read -r -p "    IP de la ràdio (o ràdios, separades per espais) a emparellar ara [buit = més tard]: " RADIOS || RADIOS=""
+  read -r -p "    Nom de la ràdio (o ràdios, separats per espais; p. ex. aula1) a emparellar ara [buit = més tard]: " RADIOS || RADIOS=""
 fi
 for R in $RADIOS; do
   /usr/local/sbin/emparella-radio "$R" "$CERTS" || echo "    AVÍS: no s'ha pogut emparellar $R"
 done
-[[ -n $RADIOS ]] || info "per emparellar una ràdio més endavant: sudo emparella-radio <IP_de_la_ràdio>"
+[[ -n $RADIOS ]] || info "per emparellar una ràdio més endavant: sudo emparella-radio <nom> (p. ex. aula1)"
+info "UPF en un altre PC: sudo emparella-upf <nom> (p. ex. upf1) i, en aquell PC, install_upf.sh amb el codi"
+if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
+  info "AVÍS: ufw és actiu i no el toco. Perquè les ràdios hi puguin trucar: sudo ufw allow 9544/tcp comment agent5g-radios-upf"
+fi

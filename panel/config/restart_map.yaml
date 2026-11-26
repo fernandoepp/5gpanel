@@ -14,4 +14,5 @@ core:
   # MCC: [nrf, scp, ausf, udm, udr, pcf, bsf, nssf, amf, smf, upf]
   # MNC: [nrf, scp, ausf, udm, udr, pcf, bsf, nssf, amf, smf, upf]
   # UPF_ADVERTISE_IP: [upf]
+  TAC: [amf]          # amf.yaml (tai): només l'AMF
   "*": []

@@ -1,0 +1,48 @@
+{
+  "role": "upf",
+  "name": "UPF upf1",
+  "listen": null,
+  "core": "192.168.1.100",
+  "core_port": 9544,
+  "cert": "/etc/agent5g-upf/certs/agent-upf.crt",
+  "key": "/etc/agent5g-upf/certs/agent-upf.key",
+  "ca": "/etc/agent5g-upf/certs/ca.crt",
+  "allowed_client_cn": [
+    "panel5g"
+  ],
+  "project_dir": "/opt/upf5g",
+  "env_file": ".env",
+  "compose_files": [
+    "docker-compose.yml"
+  ],
+  "compose_project": "upf5g",
+  "editable_keys": {},
+  "project_actions": [
+    "up",
+    "stop"
+  ],
+  "containers": [
+    "upf"
+  ],
+  "services": [
+    "upf"
+  ],
+  "log_files": {
+    "upf.log": "/opt/upf5g/log/upf.log"
+  },
+  "backup_dir": "/var/lib/agent5g-upf/backups",
+  "audit_log": "/var/lib/agent5g-upf/audit.log",
+  "docker_bin": "/usr/bin/docker",
+  "max_log_lines": 2000,
+  "max_backups": 50,
+  "apply_timeout": 300,
+  "voip": {
+    "permes": false
+  },
+  "upf": {
+    "gnb_local": true,
+    "xarxa": "172.23.0.0/24",
+    "upf_ip": "172.23.0.8",
+    "regla_main": false
+  }
+}

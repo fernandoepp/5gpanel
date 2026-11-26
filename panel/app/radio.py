@@ -121,6 +121,10 @@ def calcula(schema, f=None, arfcn=None, banda=None, scs=None, ample=None, srates
             errors.append(f'n{triada} necessita com a mínim {b["ample_min"]} MHz.')
         if ample == 5 and sc != 15:
             errors.append('5 MHz només és possible amb SCS 15 kHz.')
+    ul = None
+    if b.get('ul_mhz'):                      # FDD: pujada aparellada (separació dúplex fixa)
+        ulo, uhi = b['ul_mhz']
+        ul = {'freq_mhz': round(f_real - (lo - ulo), 4), 'rang_mhz': [ulo, uhi], 'separacio_mhz': lo - ulo}
     srate = None
     if ample and srates:
         need = ample * factor
@@ -130,5 +134,5 @@ def calcula(schema, f=None, arfcn=None, banda=None, scs=None, ample=None, srates
         'freq_mhz': f, 'freq_real_mhz': round(f_real, 4), 'arfcn': n, 'banda': triada,
         'bandes': cands, 'duplex': b.get('duplex'), 'scs': sc, 'scs_permeses': sc_perm,
         'pas_arfcn': pas(b, sc), 'rang_mhz': [lo, hi], 'srate_suggerida': srate,
-        'errors': errors, 'avisos': avisos,
+        'ul': ul, 'errors': errors, 'avisos': avisos,
     }
