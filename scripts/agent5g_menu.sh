@@ -12,6 +12,8 @@
 # A la ràdio o al PC del UPF:
 #   1) Veure la configuració
 #   2) Canviar la IP del core al qual truca (i reiniciar el que en depèn)
+#   3) Renovar el certificat: enganxes el codi que dona el core (sudo emparella-radio <nom> o
+#      sudo emparella-upf <nom>); porta la CA, el certificat, la clau i la IP del core.
 # A tots: Actualitzar des de GitHub (baixa l'última versió i la instal·la; amb còpia).
 #   Font: AGENT5G_REPO (per defecte https://github.com/fernandoepp/5gpanel) i
 #   AGENT5G_BRANCA (per defecte main), p. ex.  sudo AGENT5G_BRANCA=proves agent5g
@@ -93,10 +95,11 @@ ip_core_actual() {
 mostra_cert() {   # mostra_cert <fitxer>
     [[ -f "$1" ]] || { info "$1: no hi és"; return; }
     local cn san fi
-    cn="$(openssl x509 -in "$1" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p')"
+    cn="$(openssl x509 -in "$1" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p' || true)"
     san="$(openssl x509 -in "$1" -noout -ext subjectAltName 2>/dev/null | tail -n +2 | tr -d ' ' || true)"
-    fi="$(openssl x509 -in "$1" -noout -enddate 2>/dev/null | cut -d= -f2)"
+    fi="$(openssl x509 -in "$1" -noout -enddate 2>/dev/null | cut -d= -f2 || true)"
     info "$1"
+    [[ -n "$cn" ]] || { info "   (no és un certificat vàlid)"; return 0; }
     info "   CN $cn${san:+ · $san} · caduca $fi"
 }
 
@@ -241,16 +244,26 @@ canvia_core_client() {   # canvia_core_client <json> <servei> <nom>
     si_no "Canvio $vella -> $nova i reinicio el que en depèn?" || return
     jset "$j" core "$nova"
     info "$j: \"core\": \"$nova\" (còpia .bak-$TS)"
-    if [[ "$svc" == agent5g && -f "$p/.env" ]] && grep -q '^CORE_IP=' "$p/.env"; then
-        cp -p "$p/.env" "$p/.env.bak-$TS"
-        sed -i "s/^CORE_IP=.*/CORE_IP=$nova/" "$p/.env"
-        info "gNB: CORE_IP=$nova al .env; recreo el gNB"
-        local args=() f
-        while read -r f; do [[ -n "$f" ]] && args+=(-f "$p/$f"); done < <(python3 -c 'import json,sys;[print(x) for x in json.load(open(sys.argv[1])).get("compose_files") or ["docker-compose.yml"]]' "$j")
-        local cp_; cp_="$(jget "$j" compose_project)"
-        docker compose --project-directory "$p" --env-file "$p/.env" ${cp_:+-p "$cp_"} "${args[@]}" up -d --force-recreate >/dev/null 2>&1 \
-            || avis "no s'ha pogut recrear el gNB: mira-ho amb docker ps -a"
-    fi
+    [[ "$svc" == agent5g ]] && ip_core_gnb "$j" "$nova"
+    reinicia_client "$svc" "$nova"
+}
+
+ip_core_gnb() {   # ip_core_gnb <json> <IP>: CORE_IP del .env del gNB (ocudu) i recrea el gNB
+    local j="$1" nova="$2" p args=() f cp_
+    p="$(jget "$j" project_dir)"
+    [[ -f "$p/.env" ]] && grep -q '^CORE_IP=' "$p/.env" || return 0
+    [[ "$(env_get "$p/.env" CORE_IP)" != "$nova" ]] || return 0
+    cp -p "$p/.env" "$p/.env.bak-$TS"
+    sed -i "s/^CORE_IP=.*/CORE_IP=$nova/" "$p/.env"
+    info "gNB: CORE_IP=$nova al .env; recreo el gNB"
+    while read -r f; do [[ -n "$f" ]] && args+=(-f "$p/$f"); done < <(python3 -c 'import json,sys;[print(x) for x in json.load(open(sys.argv[1])).get("compose_files") or ["docker-compose.yml"]]' "$j")
+    cp_="$(jget "$j" compose_project)"
+    docker compose --project-directory "$p" --env-file "$p/.env" ${cp_:+-p "$cp_"} "${args[@]}" up -d --force-recreate >/dev/null 2>&1 \
+        || avis "no s'ha pogut recrear el gNB: mira-ho amb docker ps -a"
+}
+
+reinicia_client() {   # reinicia_client <servei> <IP core>
+    local svc="$1" nova="$2"
     systemctl restart "$svc"
     sleep 4
     if journalctl -u "$svc" --since "-10s" --no-pager 2>/dev/null | grep -q "connectat al core"; then
@@ -259,6 +272,69 @@ canvia_core_client() {   # canvia_core_client <json> <servei> <nom>
         avis "encara no ha connectat amb $nova (ho reintenta sol): journalctl -u $svc -n 20"
     fi
     [[ "$svc" == agent5g-upf ]] && info "el core li tornarà a passar la configuració (SMF $nova) quan connecti"
+    return 0
+}
+
+# Renova el certificat d'una ràdio o d'un UPF amb un codi d'emparellament nou del core
+# (al core: sudo emparella-radio <nom> o sudo emparella-upf <nom>). El codi porta la CA, el
+# certificat i la clau d'aquest equip i la IP del core: s'instal·len i l'agent torna a trucar.
+renova_cert_client() {   # renova_cert_client <json> <servei> <radio|upf>
+    local j="$1" svc="$2" tipus="$3" dir capca fi_ codi="" l nom t core ip port vell nou
+    dir="$(dirname "$j")/certs"
+    if [[ $tipus == radio ]]; then capca="EMPARELLAMENT"; fi_="-----END 5GPANEL EMPARELLAMENT-----"
+    else capca="UPF"; fi_="-----END 5GPANEL UPF-----"; fi
+    echo
+    echo "--- Renovar el certificat ($tipus) ---"
+    mostra_cert "$(jget "$j" cert)"
+    info "Al core, executa:  sudo emparella-$tipus --nou <nom>   (el mateix nom per conservar-lo al panell;"
+    info "                   --nou n'emet un de nou; sense --nou dona el mateix certificat amb la IP del core al dia)"
+    info "i enganxa aquí el codi sencer (de la línia BEGIN a la línia END):"
+    while IFS= read -r l; do
+        codi+="$l"$'\n'
+        [[ "$l" == "$fi_" ]] && break
+    done
+    nom="$(sed -n "s/^-----BEGIN 5GPANEL $capca \([A-Za-z0-9_.-]*\)-----\$/\1/p" <<<"$codi" | head -1)"
+    [[ -n "$nom" ]] || { avis "no és un codi de $tipus (ha de començar per -----BEGIN 5GPANEL $capca <nom>-----)"; return 0; }
+    t="$(mktemp -d /tmp/agent5g-cert.XXXXXX)"
+    if ! sed -n '/^-----BEGIN/,/^-----END/{/^-----/d;p}' <<<"$codi" | base64 -d 2>/dev/null | tar xzf - -C "$t" 2>/dev/null; then
+        avis "el codi està malmès (copia'l sencer)"; [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"; return 0
+    fi
+    for f in ca.crt "agent-$tipus.crt" "agent-$tipus.key" core; do
+        [[ -s "$t/$f" ]] || { avis "al codi hi falta $f"; [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"; return 0; }
+    done
+    if ! openssl verify -CAfile "$t/ca.crt" -purpose sslclient "$t/agent-$tipus.crt" >/dev/null 2>&1; then
+        avis "el certificat del codi no és vàlid per a la seva CA: torna'l a generar al core"
+        [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"; return 0
+    fi
+    core="$(tr -d '[:space:]' < "$t/core")"
+    [[ $core =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$ ]] || { avis "IP del core del codi invàlida: $core"; [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"; return 0; }
+    ip="${core%:*}"; port="${core##*:}"
+    vell="$(openssl x509 -in "$(jget "$j" cert)" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p' || true)"
+    nou="$(openssl x509 -in "$t/agent-$tipus.crt" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p')"
+    info "codi de \"$nom\" ($nou), core $core, caduca $(openssl x509 -in "$t/agent-$tipus.crt" -noout -enddate | cut -d= -f2)"
+    [[ -z "$vell" || "$vell" == "$nou" ]] || avis "el nom canvia ($vell -> $nou): al panell sortirà com un equip nou"
+    si_no "Instal·lo aquest certificat i reinicio l'agent?" || { [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"; return 0; }
+    install -d -m 700 "$dir/bak-$TS"
+    cp -a "$dir"/*.crt "$dir"/*.key "$dir/bak-$TS/" 2>/dev/null || true
+    install -m 600 "$t/ca.crt" "$t/agent-$tipus.crt" "$t/agent-$tipus.key" "$dir/"
+    [[ "$t" == /tmp/agent5g-cert.* ]] && rm -rf -- "$t"
+    info "certificat instal·lat a $dir (l'anterior a $dir/bak-$TS)"
+    cp -p "$j" "$j.bak-$TS"
+    J="$j" D="$dir" TIPUS="$tipus" NOM="$nom" IP="$ip" PORT="$port" python3 - <<'PY'
+import json, os
+e = os.environ
+f = e['J']
+c = json.load(open(f))
+c.update(core=e['IP'], core_port=int(e['PORT']), listen=None,
+         cert=f"{e['D']}/agent-{e['TIPUS']}.crt", key=f"{e['D']}/agent-{e['TIPUS']}.key", ca=f"{e['D']}/ca.crt",
+         name=('Ràdio ' if e['TIPUS'] == 'radio' else 'UPF ') + e['NOM'])
+open(f + '.nou', 'w').write(json.dumps(c, indent=2, ensure_ascii=False))
+os.chmod(f + '.nou', 0o600)
+os.replace(f + '.nou', f)
+PY
+    info "$j: core $ip:$port (còpia .bak-$TS)"
+    [[ $tipus == radio ]] && ip_core_gnb "$j" "$ip"
+    reinicia_client "$svc" "$ip"
 }
 
 # --- actualitzar des de GitHub (tots els rols) ---------------------------------------------
@@ -359,11 +435,13 @@ while true; do
                          "canvia_ip_core|Canviar la IP del core (i regenerar els certificats)"
                          "renova|Renovar els certificats (mateixa IP)") ;;
         radio) opcions+=("veure_radio|Veure la configuració de la ràdio"
-                         "core_radio|Canviar la IP del core al qual truca la ràdio") ;;
+                         "core_radio|Canviar la IP del core al qual truca la ràdio"
+                         "cert_radio|Renovar el certificat de la ràdio (enganxant el codi del core)") ;;
     esac
     if (( TE_UPF )); then
         opcions+=("veure_upf|Veure la configuració del UPF"
-                  "core_upf|Canviar la IP del core al qual truca el UPF")
+                  "core_upf|Canviar la IP del core al qual truca el UPF"
+                  "cert_upf|Renovar el certificat del UPF (enganxant el codi del core)")
     fi
     opcions+=("actualitza|Actualitzar des de GitHub (última versió)")
     i=1; for o in "${opcions[@]}"; do echo " $i) ${o#*|}"; i=$((i + 1)); done
@@ -382,6 +460,8 @@ while true; do
         core_radio)     canvia_core_client $CFG_A agent5g "Ràdio" ;;
         veure_upf)      veure_client $CFG_U "Agent del UPF" ;;
         core_upf)       canvia_core_client $CFG_U agent5g-upf "UPF" ;;
+        cert_radio)     renova_cert_client $CFG_A agent5g radio ;;
+        cert_upf)       renova_cert_client $CFG_U agent5g-upf upf ;;
         actualitza)     actualitza ;;
     esac
 done
