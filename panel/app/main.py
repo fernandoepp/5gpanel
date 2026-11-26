@@ -97,7 +97,7 @@ def _peer_cn(r):
 def _check_peer(r):
     """Només acceptem agents: certificat de la CA (ja verificat pel TLS) amb CN agent-core o agent-radio*."""
     cn = _peer_cn(r) or ''
-    if not (cn == 'agent-core' or cn.startswith('agent-radio')):
+    if not (cn == 'agent-core' or cn.startswith('agent-radio') or cn.startswith('agent-upf')):
         raise httpx.ConnectError(f'certificat no és d\'un agent (CN={cn or "?"})')
     return cn
 
@@ -280,7 +280,30 @@ async def radios_enllac():
                         AGENTS[nom]['titol'] = str(h['nom'])[:60]
                 except HTTPException:
                     pass
-    # una ràdio que ja no hi és desapareix al cap de 2 consultes (uns 20 s)
+        # PCs amb UPF: també truquen al core (agent-upf-<nom>); es veuen com equips "upf"
+        try:
+            ru = await agent(t, 'GET', '/upfs', 'enllac', timeout=8.0)
+        except HTTPException:
+            ru = {}
+        for u in ru.get('upfs') or []:
+            uid = str(u.get('id') or '')
+            if not NAME_RE.match(uid) or not u.get('connectat'):
+                continue
+            nom = f'upf-{uid}'
+            vistes.add(nom)
+            _ENLLAC_FALLADES.pop(nom, None)
+            ant = AGENTS.get(nom)
+            AGENTS[nom] = {'url': a['url'].rstrip('/') + f'/upf/{uid}', 'rol': 'upf', 'descobert': True,
+                           'via': t, 'ip': u.get('ip'), 'id': uid, 'des_de': u.get('des_de'),
+                           'titol': ant['titol'] if ant and ant.get('via') == t else f'UPF {uid}'}
+            if not ant or ant.get('via') != t:
+                try:
+                    h = await agent(nom, 'GET', '/health', 'enllac', timeout=8.0)
+                    if h.get('nom'):
+                        AGENTS[nom]['titol'] = str(h['nom'])[:60]
+                except HTTPException:
+                    pass
+    # una ràdio (o UPF) que ja no hi és desapareix al cap de 2 consultes (uns 20 s)
     for nom in [n for n, a in AGENTS.items() if a.get('via') and n not in vistes]:
         _ENLLAC_FALLADES[nom] += 1
         if _ENLLAC_FALLADES[nom] >= 2:
@@ -733,6 +756,50 @@ async def restore(t: str, request: Request, s=Depends(admin)):
         if svc not in PENDING[t]:
             PENDING[t].append(svc)
     return {**r, 'pendents': PENDING[t]}
+
+
+# ---------------------------------------------------------------- UPF separat
+# El PC del UPF truca al core (com la ràdio). El panell només parla amb l'agent del core:
+# GET /upf (mode, UPF connectats, PFCP) i /upf/<id>/upf_estat (mètriques per HTTP del UPF).
+def _core_de(t):
+    if t not in AGENTS or AGENTS[t]['rol'] != 'core':
+        raise HTTPException(404, 'cal un core')
+    return t
+
+
+@app.get('/api/upf/{t}')
+async def get_upf(t: str, s=Depends(current_user)):
+    _core_de(t)
+    st = await agent(t, 'GET', '/upf', s['user'], timeout=30.0)
+    con = [u for u in st.get('upfs') or [] if u.get('connectat') and NAME_RE.match(str(u.get('id') or ''))]
+    res = await asyncio.gather(*(_safe(agent(t, 'GET', f"/upf/{u['id']}/upf_estat", s['user'], timeout=20.0), None)
+                                 for u in con))
+    for u, (d, err) in zip(con, res):
+        u['estat'], u['error'] = d, err
+    return st
+
+
+@app.post('/api/upf/{t}')
+async def post_upf(t: str, request: Request, s=Depends(admin)):
+    _core_de(t)
+    body = await request.json()
+    acc = body.get('accio')
+    if acc not in ('separa', 'ajunta', 'auto'):
+        raise HTTPException(400, 'acció invàlida')
+    cos = {'accio': acc}
+    if acc == 'separa':
+        if body.get('upf_id'):
+            if not NAME_RE.match(str(body['upf_id'])):
+                raise HTTPException(400, 'UPF invàlid')
+            cos['upf_id'] = str(body['upf_id'])
+        else:
+            try:
+                cos['ip'] = str(ipaddress.IPv4Address(str(body.get('ip', '')).strip()))
+            except ValueError:
+                raise HTTPException(400, 'IP del UPF invàlida')
+    if acc == 'auto':
+        cos['valor'] = bool(body.get('valor'))
+    return await agent(t, 'POST', '/upf', s['user'], timeout=float(CFG.get('apply_timeout', 300)) + 60, json=cos)
 
 
 @app.post('/api/project/{t}')

@@ -21,6 +21,12 @@
 #   --ocudu DIR          on es clona ocudu (per defecte ~/ocudu de l'usuari)
 #   --sense-build        no construir la imatge ni arrencar el gNB (només configurar + agent)
 #   --sense-agent        no instal·lar l'agent del panell
+#   --forcar             tornar a instal·lar l'agent encara que ja hi sigui
+#
+# Tornar-lo a executar no refà el que ja hi és: si l'agent ja està instal·lat no es toca
+# (per posar-ne la versió nova: desinstala.sh --radio i tornar a executar aquest script, o
+# --forcar). Si l'agent s'havia desinstal·lat, fa servir sol el certificat que es va desar
+# (/var/lib/agent5g/emparellament) i no cal tornar a enganxar el codi.
 #
 # Paràmetres de la cel·la (variables d'entorn; per defecte, els de la guia, Annex B):
 #   PLMN=00101 TAC=1 SST=1 TX_GAIN=80 RX_GAIN=40 DL_ARFCN=470000 BAND=40
@@ -34,7 +40,7 @@
 # ============================================================================
 set -euo pipefail
 OCUDU_REPO="${OCUDU_REPO:-https://gitlab.com/ocudu/ocudu.git}"
-CORE_IP=""; RADIO_IP=""; EMPAR=""; OCUDU=""; AMB_BUILD=1; AMB_AGENT=1
+CORE_IP=""; RADIO_IP=""; EMPAR=""; OCUDU=""; AMB_BUILD=1; AMB_AGENT=1; FORCAR=0
 
 pas()   { echo; echo "==> [$1] $2"; }
 info()  { echo "    $*"; }
@@ -50,6 +56,7 @@ while [[ $# -gt 0 ]]; do
         --ocudu)         OCUDU="${2:?}"; shift ;;
         --sense-build)   AMB_BUILD=0 ;;
         --sense-agent)   AMB_AGENT=0 ;;
+        --forcar)        FORCAR=1 ;;
         -h|--help)       sed -n '3,/^# =====/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)               error "opció desconeguda: $1" ;;
     esac
@@ -69,10 +76,27 @@ pregunta() {   # pregunta <text> <variable> [per defecte]
     printf -v "$var" '%s' "${r:-$def}"
 }
 
+# agent ja instal·lat? Llavors no es toca (ni es demana el codi)
+AGENT_JA=0; CORE_ENLLAC=""
+if (( AMB_AGENT && ! FORCAR )) && [[ -f /etc/systemd/system/agent5g.service && -f /etc/agent5g/agent5g.json ]] \
+   && [[ "$(python3 -c 'import json;print(json.load(open("/etc/agent5g/agent5g.json")).get("role",""))' 2>/dev/null)" == radio ]]; then
+    AGENT_JA=1; AMB_AGENT=0
+    CORE_ENLLAC="$(python3 -c 'import json; c=json.load(open("/etc/agent5g/agent5g.json")); print("%s:%s" % (c["core"], c.get("core_port") or 9544) if c.get("core") else "")' 2>/dev/null || true)"
+    echo "    L'agent del panell ja està instal·lat: no es toca (versió nova: desinstala.sh --radio, o --forcar)."
+fi
+DESAT=/var/lib/agent5g/emparellament
 # codi d'emparellament (abans de la part lenta, per no haver d'esperar-se 40 minuts)
-CODI=""; NOM_RADIO=""; CORE_ENLLAC=""
+CODI=""; NOM_RADIO=""
 if (( AMB_AGENT )); then
-    if [[ -n "$EMPAR" ]]; then
+    if [[ -z "$EMPAR" && -s "$DESAT/agent-radio.crt" && -s "$DESAT/core" ]]; then
+        # reinstal·lació després de desinstala.sh: el certificat i la IP del core ja hi són
+        cn="$(openssl x509 -in "$DESAT/agent-radio.crt" -noout -subject -nameopt multiline 2>/dev/null | sed -n 's/^ *commonName *= *//p')"
+        n="${cn#agent-radio}"; n="${n#-}"; n="${n:-radio}"
+        CODI="$( { echo "-----BEGIN 5GPANEL EMPARELLAMENT $n-----"
+                   tar czf - -C "$DESAT" ca.crt agent-radio.crt agent-radio.key core | base64 -w 76
+                   echo "-----END 5GPANEL EMPARELLAMENT-----"; } )"
+        echo "    Faig servir l'emparellament desat ($DESAT): ràdio \"$n\", core $(cat "$DESAT/core")"
+    elif [[ -n "$EMPAR" ]]; then
         CODI="$(cat "$EMPAR")"
     elif [[ -t 0 ]]; then
         echo "    Al core, executa:  sudo emparella-radio <nom_d_aquesta_radio>   (p. ex. aula2)"
@@ -327,12 +351,17 @@ else
 fi
 
 # --- 8. agent del panell -------------------------------------------------------------
+if (( AGENT_JA )); then
+    pas 8 "Agent del panell (agent5g)"
+    info "ja instal·lat: no es toca ($(systemctl is-active agent5g 2>/dev/null || true); truca al core ${CORE_ENLLAC:-?})"
+fi
 if (( AMB_AGENT )); then
     pas 8 "Agent del panell (agent5g)"
     install -d -m 755 /opt/agent5g
     install -m 755 "$SRC/agent/agent5g.py" /opt/agent5g/agent5g.py
     install -d -m 700 /etc/agent5g /etc/agent5g/certs /var/lib/agent5g
     install -m 600 "$TMPC/ca.crt" "$TMPC/agent-radio.crt" "$TMPC/agent-radio.key" /etc/agent5g/certs/
+    rm -rf "$DESAT"                      # l'emparellament desat ja és a /etc/agent5g
     PROJ="$DOCKER_DIR" NOM="$NOM_RADIO" CORE="$CORE_ENLLAC" python3 - <<'PY'
 import json, os
 f = '/etc/agent5g/agent5g.json'

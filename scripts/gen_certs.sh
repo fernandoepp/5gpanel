@@ -7,6 +7,8 @@
 #   truca al core (enllaç ràdio -> core) i s'identifica amb aquest certificat (CN agent-radio-<nom>).
 #   Si el nom és una IP, el certificat també val per a l'accés directe antic a aquella IP.
 #   (fa servir la CA que ja hi ha a <sortida>/ca; no en crea cap de nova)
+# PCs amb UPF separat (ho fa emparella_upf.sh, al core):
+#   ./gen_certs.sh --upf <nom_upf> [carpeta_sortida]           -> <sortida>/agent-upf-<nom>/
 # Només core + panell (sense ràdio; les ràdios s'afegeixen després amb --radio):
 #   ./gen_certs.sh --core <IP_core> [carpeta_sortida]
 # Resultat:
@@ -22,6 +24,11 @@ if [[ ${1:-} == --radio ]]; then
   [[ $RADIO_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nom de ràdio invàlid: $RADIO_NOM (lletres, xifres, . _ -)"; exit 1; }
   [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
   NOMES_RADIO=1
+elif [[ ${1:-} == --upf ]]; then
+  UPF_NOM=${2:?nom del UPF nou}; OUT=${3:-./certs-5g}; DIES=${CORE5G_CERT_DIES:-825}
+  [[ $UPF_NOM =~ ^[A-Za-z0-9_.-]{1,52}$ ]] || { echo "Nom de UPF invàlid: $UPF_NOM (lletres, xifres, . _ -)"; exit 1; }
+  [[ -f "$OUT/ca/ca.key" && -f "$OUT/ca/ca.crt" ]] || { echo "No trobo la CA a $OUT/ca (ca.key i ca.crt)"; exit 1; }
+  NOMES_RADIO=2
 elif [[ ${1:-} == --core ]]; then
   NOMES_RADIO=0; CORE_IP=${2:?IP del core}; RADIO_IP=""; OUT=${3:-./certs-5g}
 else
@@ -66,6 +73,13 @@ emet() {
 }
 
 LOCAL="DNS:host.docker.internal,IP:172.17.0.1,IP:127.0.0.1"
+if [[ $NOMES_RADIO == 2 ]]; then
+  # PC amb UPF: com la ràdio, truca al core (client TLS) i s'identifica pel CN agent-upf-<nom>
+  D="$OUT/agent-upf-$UPF_NOM"; mkdir -p "$D"
+  emet agent-upf "agent-upf-$UPF_NOM" clientAuth "" "$D"
+  echo "Certificats del UPF $UPF_NOM a $D"
+  exit 0
+fi
 if [[ $NOMES_RADIO == 1 ]]; then
   D="$OUT/agent-radio-$RADIO_NOM"; mkdir -p "$D"
   SAN=$LOCAL

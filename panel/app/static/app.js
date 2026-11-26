@@ -2,7 +2,7 @@
 // Tot el contingut que ve dels agents (logs, valors) s'insereix amb textContent.
 
 const $ = (s) => document.querySelector(s);
-const VERSIO = 'v15';
+const VERSIO = 'v17';
 function mostraError(txt) {
   let d = document.getElementById('error-global');
   if (!d) { d = document.createElement('div'); d.id = 'error-global'; document.body.prepend(d); }
@@ -11,7 +11,7 @@ function mostraError(txt) {
 window.addEventListener('error', (e) => mostraError(`${e.message} @ ${(e.filename || '').split('/').pop()}:${e.lineno}:${e.colno}`));
 window.addEventListener('unhandledrejection', (e) => mostraError(String(e.reason && (e.reason.stack || e.reason.message) || e.reason)));
 let ME = null;
-let timerEstat = null, timerLogs = null, timerUE = null, timerGnb = null, timerVoip = null, timerRadio = null;
+let timerUpf = null, timerEstat = null, timerLogs = null, timerUE = null, timerGnb = null, timerVoip = null, timerRadio = null;
 
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
@@ -62,8 +62,8 @@ $('#tema').addEventListener('click', () => {
 pintaBotoTema();
 
 // ------------------------------------------------------------ equips (fixos i descoberts)
-const SELECTS_TOTS = ['#par-desti', '#log-desti', '#his-desti'];
-const SELECTS_CORE = ['#ue-desti', '#gnb-desti', '#sub-desti'];
+const SELECTS_TOTS = ['#log-desti', '#his-desti'];
+const SELECTS_CORE = ['#ue-desti', '#gnb-desti', '#sub-desti', '#upf-desti'];
 function omplirSelects() {
   const omple = (id, llista) => {
     const s = $(id), cur = s.value;
@@ -72,6 +72,8 @@ function omplirSelects() {
     s.replaceChildren(...llista.map((d) => el('option', { value: d, selected: d === cur }, ME.titols[d] || d)));
   };
   SELECTS_TOTS.forEach((id) => omple(id, ME.destins));
+  // el PC del UPF no té paràmetres propis: els hi passa el core
+  omple('#par-desti', ME.destins.filter((d) => (ME.rols || {})[d] !== 'upf'));
   SELECTS_CORE.forEach((id) => omple(id, ME.destins.filter((d) => (ME.rols || {})[d] === 'core')));
 }
 async function refrescaEquips() {
@@ -109,8 +111,9 @@ function tab(nom) {
   document.querySelectorAll('nav button').forEach((b) => b.classList.toggle('actiu', b.dataset.tab === nom));
   document.querySelectorAll('.tab').forEach((t) => (t.hidden = t.id !== `tab-${nom}`));
   clearInterval(timerEstat); clearInterval(timerLogs); clearInterval(timerUE); clearInterval(timerGnb); clearInterval(timerRadio);
-  clearInterval(timerVoip); timerVoip = null;
+  clearInterval(timerVoip); timerVoip = null; clearInterval(timerUpf);
   if (nom !== 'estat') refrescaEquips();
+  if (nom === 'upf') { carregaUpf(); timerUpf = setInterval(() => $('#upf-auto-ref').checked && !document.hidden && carregaUpf(), 5000); }
   if (nom === 'estat') { carregaEstat(); timerEstat = setInterval(carregaEstat, 5000); }
   if (nom === 'parametres') carregaParametres();
   if (nom === 'logs') { carregaFonts().then(carregaLogs); timerLogs = setInterval(() => $('#log-auto').checked && carregaLogs(), 3000); }
@@ -149,16 +152,16 @@ async function pintaEquips(forca) {
   btn.addEventListener('click', async () => { btn.disabled = true; btn.textContent = 'Cercant…'; await pintaEquips(true); });
   const quanD = ds.darrera ? new Date(ds.darrera * 1000).toLocaleTimeString() : 'encara no';
   const titolEq = (e) => e.enllac
-    ? `La ràdio truca al core amb el seu certificat de la CA (ara des de ${e.ip || '?'}${e.des_de ? ', connectada des de ' + new Date(e.des_de).toLocaleString() : ''})`
+    ? `${e.rol === 'upf' ? 'El PC del UPF' : 'La ràdio'} truca al core amb el seu certificat de la CA (ara des de ${e.ip || '?'}${e.des_de ? ', connectat des de ' + new Date(e.des_de).toLocaleString() : ''})`
     : e.descobert ? 'Trobat per la cerca a la xarxa: certificat de la CA del panell vàlid per a aquesta IP' : 'Definit a la configuració del panell';
   const errs = Object.entries(en.errors || {});
-  const notes = [el('p', { class: 'nota' }, 'Les ràdios es connecten soles al core (port 9544) amb el certificat del codi d\'emparellament: no cal saber-ne la IP. Ràdio nova: al core, sudo emparella-radio <nom>.')];
+  const notes = [el('p', { class: 'nota' }, 'Les ràdios es connecten soles al core (port 9544) amb el certificat del codi d\'emparellament: no cal saber-ne la IP. Ràdio nova: al core, sudo emparella-radio <nom>. PC amb UPF: sudo emparella-upf <nom>.')];
   if (errs.length) notes.push(el('p', { class: 'error' }, errs.map(([t, m]) => `No puc preguntar a ${ME.titols[t] || t} quines ràdios té: ${m}`).join(' · ')));
   if (ds.actiu) notes.push(el('p', { class: 'nota' }, `També cerca agents antics a ${(ds.xarxes || []).join(', ') || '—'} (port ${ds.port || '?'}). Darrera cerca: ${quanD}.`));
   box.replaceChildren(el('div', { class: 'card' },
     el('div', { class: 'cap-card' }, el('h2', {}, 'Equips gestionats'), btn),
     el('div', { class: 'equips' }, r.equips.map((e) => el('span', { class: `pastilla ${e.descobert ? 'ok' : ''}`, title: titolEq(e) },
-      `${e.titol}${e.enllac ? ' · connectada al core' : e.descobert ? ' · descobert' : ''}`))),
+      `${e.titol}${e.enllac ? (e.rol === 'upf' ? ' · connectat al core' : ' · connectada al core') : e.descobert ? ' · descobert' : ''}`))),
     ...notes));
   if (r.equips.length !== EQUIPS_N) { EQUIPS_N = r.equips.length; refrescaEquips(); }
 }
@@ -1530,5 +1533,134 @@ async function carregaHistorial() {
   } catch (e) { tb.append(el('tr', {}, el('td', { colspan: 5, class: 'error' }, e.message))); }
 }
 $('#his-desti').addEventListener('change', carregaHistorial);
+
+// ------------------------------------------------------------ UPF separat
+// El PC del UPF truca al core (com la ràdio). El core el fa servir sol si el mode
+// automàtic és actiu; aquí es veu on és el UPF, es pot separar o tornar a ajuntar.
+const UPF_METRIQUES = [
+  ['fivegs_upffunction_upf_sessionnbr', 'Sessions al UPF', 0],
+  ['fivegs_ep_n3_gtp_indatapktn3upf', 'Paquets GTP rebuts de la gNB (N3)', 0],
+  ['fivegs_ep_n3_gtp_outdatapktn3upf', 'Paquets GTP enviats a la gNB (N3)', 0],
+  ['fivegs_ep_n3_gtp_indatavolumeqosleveln3upf', 'Dades de pujada (N3)', 'b'],
+  ['fivegs_ep_n3_gtp_outdatavolumeqosleveln3upf', 'Dades de baixada (N3)', 'b'],
+  ['fivegs_upffunction_sm_n4sessionestabreq', 'Peticions de sessió de l\'SMF (N4)', 0],
+  ['fivegs_upffunction_sm_n4sessionreport', 'Informes de sessió a l\'SMF (N4)', 0],
+  ['fivegs_upffunction_sm_n4sessionreportsucc', 'Informes acceptats (N4)', 0],
+];
+function bytes(n) {
+  if (n == null) return '—';
+  const u = ['B', 'kB', 'MB', 'GB', 'TB']; let i = 0;
+  while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+  return `${n.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+function taulaMetriquesUpf(m) {
+  if (!m) return el('p', { class: 'nota' }, 'Sense mètriques.');
+  const parts = [];
+  if (!m.ok) parts.push(el('p', { class: 'warn' }, `No puc llegir les mètriques (${m.url}): ${m.error || '?'}`));
+  const tot = m.total || {};
+  const files = UPF_METRIQUES.filter(([k]) => k in tot).map(([k, txt, u]) =>
+    el('tr', {}, el('th', {}, txt), el('td', {}, u === 'b' ? bytes(tot[k]) : String(Math.round(tot[k])))));
+  if (files.length) parts.push(el('table', {}, el('tbody', {}, files)));
+  const ifs = Object.entries(m.interficies || {});
+  if (ifs.length) parts.push(el('h3', {}, 'Interfícies del contenidor'),
+    el('table', {}, el('thead', {}, el('tr', {}, el('th', {}, 'Interfície'), el('th', {}, 'Rebut'), el('th', {}, 'Enviat'))),
+      el('tbody', {}, ifs.map(([n, c]) => el('tr', { title: n.startsWith('ogstun') ? 'Túnel dels mòbils: el que hi entra i en surt és el seu trànsit' : '' },
+        el('td', {}, n), el('td', {}, `${bytes(c.rx_bytes)} · ${c.rx_paquets} paq.`), el('td', {}, `${bytes(c.tx_bytes)} · ${c.tx_paquets} paq.`))))));
+  const altres = Object.entries(tot).filter(([k]) => k.startsWith('fivegs_') && !UPF_METRIQUES.some(([x]) => x === k));
+  if (altres.length) {
+    const d = el('details', {}, el('summary', {}, `Totes les mètriques (${altres.length} més)`),
+      el('table', {}, el('tbody', {}, altres.map(([k, v]) => el('tr', {}, el('td', {}, k), el('td', {}, String(v)))))));
+    parts.push(d);
+  }
+  if (m.hora) parts.push(el('p', { class: 'nota' }, `Llegit per HTTP del servidor de mètriques del UPF a les ${horaCurta(m.hora)}.`));
+  return el('div', {}, ...parts);
+}
+function textPfcp(p) {
+  if (!p) return el('span', { class: 'nota' }, 'el log no en diu res');
+  return el('span', { class: p.associat ? 'ok' : 'error' },
+    `${p.associat ? 'associat' : 'desassociat'} amb ${p.ip || '?'}${p.quan ? ' · ' + local(p.quan) : ''}`);
+}
+let UPF_ENVIANT = false;
+async function accioUpf(t, cos, txt) {
+  if (txt && !confirm(txt)) return;
+  UPF_ENVIANT = true;
+  const box = $('#upf-estat');
+  box.prepend(el('p', { class: 'nota', id: 'upf-treballant' }, 'Aplicant… (recrea l\'SMF; pot trigar uns segons)'));
+  try {
+    const r = await api('POST', `/api/upf/${t}`, cos);
+    const canviat = (r.canviat || []).join(', ');
+    UPF_ENVIANT = false;
+    await carregaUpf();
+    $('#upf-estat').prepend(el('p', { class: 'ok' }, `Fet.${canviat ? ' Fitxers canviats: ' + canviat + ' (amb còpia).' : ' No calia canviar cap fitxer.'}`));
+  } catch (e) {
+    UPF_ENVIANT = false;
+    await carregaUpf();
+    $('#upf-estat').prepend(el('p', { class: 'error' }, e.message));
+  }
+}
+async function carregaUpf() {
+  if (UPF_ENVIANT) return;
+  const t = $('#upf-desti').value, box = $('#upf-estat'), llista = $('#upf-llista');
+  if (!t) { box.replaceChildren(el('p', { class: 'nota' }, 'No hi ha cap core.')); llista.replaceChildren(); return; }
+  let d;
+  try { d = await api('GET', `/api/upf/${t}`); }
+  catch (e) { box.replaceChildren(el('div', { class: 'card' }, el('p', { class: 'error' }, e.message))); llista.replaceChildren(); return; }
+  const admin = ME.rol === 'admin';
+  const remot = d.mode === 'remot';
+  const upfs = d.upfs || [];
+  const sel = upfs.find((u) => u.id === d.upf_id);
+  const files = [
+    ['On és el UPF', remot ? `separat, en un altre PC (${d.ip})${sel ? ' · ' + sel.id : d.upf_id ? '' : ' · sense agent'}` : 'dins del core'],
+    ['PFCP de l\'SMF (N4)', textPfcp(d.pfcp)],
+  ];
+  if (remot) files.push(['L\'SMF s\'anuncia com a', d.advertise || '—']);
+  const card = el('div', { class: 'card' }, el('h2', {}, 'Estat'), kv(files));
+  if (admin) {
+    const auto = el('input', { type: 'checkbox', role: 'switch', checked: !!d.auto });
+    auto.addEventListener('change', () => accioUpf(t, { accio: 'auto', valor: auto.checked }));
+    card.append(el('label', { class: 'interruptor', title: 'Quan un PC amb UPF truca al core, el core el fa servir sol (si el core té el seu UPF o el UPF triat no hi és).' },
+      auto, ' Fer servir sol el UPF que truqui al core'));
+    const fila = el('div', { class: 'fila' });
+    if (remot) {
+      fila.append(el('button', { type: 'button', onclick: () => accioUpf(t, { accio: 'ajunta' },
+        'Tornar a posar el UPF dins del core? L\'SMF es recrea i el UPF remot s\'atura (les sessions dels mòbils es tornen a fer).') }, 'Torna a ajuntar el UPF al core'));
+    }
+    const ip = el('input', { placeholder: '192.168.2.101', size: 15 });
+    fila.append(el('label', { title: 'Per a un UPF muntat a mà, sense agent: el core no el pot configurar ni en veurà les mètriques.' }, 'UPF sense agent a la IP ', ip),
+      el('button', { type: 'button', onclick: () => accioUpf(t, { accio: 'separa', ip: ip.value.trim() },
+        `Separar el UPF cap a ${ip.value.trim()}? Aquell PC ha de tenir un UPF que accepti aquest SMF.`) }, 'Separa'));
+    card.append(fila);
+    if (!d.auto && !remot && upfs.some((u) => u.connectat)) card.append(el('p', { class: 'nota' }, 'El mode automàtic és aturat (s\'ha ajuntat a mà): tria un UPF de la llista o torna\'l a activar.'));
+  }
+  if (!d.rep_upfs) card.append(el('p', { class: 'warn' }, 'L\'agent del core no rep equips (enllaç desactivat): actualitza l\'agent.'));
+  if (!remot && d.metriques) card.append(el('h3', {}, 'UPF del core'), taulaMetriquesUpf(d.metriques));
+  box.replaceChildren(card);
+
+  const lc = el('div', { class: 'card' }, el('h2', {}, 'PCs amb UPF connectats al core'));
+  if (!upfs.length) lc.append(el('p', { class: 'nota' }, 'Cap. Per afegir-ne un: al core, sudo emparella-upf <nom>, i al PC del UPF, l\'ordre que surt (install_upf.sh amb el codi). La resta es fa sol.'));
+  for (const u of upfs) {
+    const e = u.estat || {};
+    const triat = remot && d.upf_id === u.id;
+    const cap = el('div', { class: 'cap-card' }, el('h3', {}, `UPF ${u.id}`),
+      el('span', { class: `pastilla ${triat ? 'ok' : u.connectat ? '' : 'error'}` },
+        triat ? 'en ús pel core' : u.connectat ? 'connectat, no en ús' : 'desconnectat'));
+    const b = el('div', {}, cap, kv([
+      ['IP (la que veu el core)', u.ip || '—'],
+      ['Connectat des de', u.des_de ? local(u.des_de) : '—'],
+      ['Contenidor upf', e.corrent ? el('span', { class: 'ok' }, 'en marxa') : el('span', { class: 'nota' }, 'aturat')],
+      ['PFCP del UPF', e.corrent ? textPfcp(e.pfcp) : '—'],
+      ['Mòbils (internet / IMS)', e.env ? `${e.env.UE_IPV4_INTERNET || '—'} / ${e.env.UE_IPV4_IMS || '—'}` : '—'],
+      ['GTP-U (on envia la gNB)', e.env ? `${e.env.UPF_ADVERTISE_IP || '—'}${e.config && e.config.gnb_local ? ' (gNB al mateix PC)' : ''}` : '—'],
+    ]));
+    if (u.error) b.append(el('p', { class: 'error' }, u.error));
+    if (admin && u.connectat && !triat) b.append(el('div', { class: 'fila' }, el('button', { type: 'button', class: 'primari', onclick: () => accioUpf(t, { accio: 'separa', upf_id: u.id },
+      `Fer servir el UPF ${u.id} (${u.ip})? L'SMF es recrea i ${remot ? 'l\'actual s\'atura' : 'el UPF del core s\'atura'}.`) }, 'Fes servir aquest UPF')));
+    if (e.metriques) b.append(taulaMetriquesUpf(e.metriques));
+    lc.append(b);
+  }
+  llista.replaceChildren(lc);
+}
+$('#upf-refresca').addEventListener('click', carregaUpf);
+$('#upf-desti').addEventListener('change', carregaUpf);
 
 inici();

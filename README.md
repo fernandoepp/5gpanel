@@ -12,6 +12,8 @@ Navegador ──HTTPS + login──► panel5g (Docker, PC del core, IP_core:844
                 .env de docker_open5gs   (la RADIO abre la      .env de ocudu/docker
                                           conexión y la mantiene)
 ```
+Un **PC con UPF** (`agent5g-upf`) llama al core igual que una radio (ver «UPF separado»).
+
 **La radio llama al core**, igual que la gNodeB llama al AMF: el agente de la radio no escucha ningún
 puerto, abre él las conexiones cifradas hacia el puerto 9544 del core y las mantiene. Al core le da igual
 la IP de la radio; **la única IP fija es la del core**. Ver «Enlace radio → core» más abajo.
@@ -27,7 +29,13 @@ la IP de la radio; **la única IP fija es la del core**. Ver «Enlace radio → 
    (puerto 9543 para el panel y 9544 para las radios). Panel: `scripts/install_panel.sh` (ver más abajo).
 2. **Cada radio**: en el core `sudo emparella-radio <nombre>` (p. ej. `aula2`) y en la radio
    `sudo bash scripts/install_radio.sh --emparellament codigo.txt` (o pega el código cuando lo pida).
-3. Importa `certs-5g/ca/ca.crt` como CA de confianza en los navegadores del laboratorio.
+3. **UPF en otro PC (opcional)**: en el core `sudo emparella-upf <nombre>` y en ese PC
+   `sudo bash scripts/install_upf.sh` (pega el código). El resto se hace solo.
+4. Importa `certs-5g/ca/ca.crt` como CA de confianza en los navegadores del laboratorio.
+
+Volver a ejecutar un instalador **solo instala lo que falta**: lo que ya está no se toca. Para poner la
+versión nueva de algo: `sudo bash scripts/desinstala.sh` (o `core5g.sh` → 5 «Desinstal·lar») y luego el
+instalador otra vez (ver «Desinstalar y reinstalar»).
 
 ## Flujo de un cambio
 
@@ -211,6 +219,57 @@ Varias radios = varios códigos de emparejamiento con nombres distintos. Puertos
 Los códigos de emparejamiento anteriores no sirven (el certificado no tenía uso «cliente» y no llevaban la IP
 del core): hay que generarlos de nuevo. La búsqueda por la red del sistema anterior (`descobriment`) queda
 desactivada por defecto; solo sirve para radios antiguas que aún escuchan (`descobriment: {actiu: true}`).
+
+## UPF separado (pestaña UPF)
+El UPF (por donde pasan los datos de los móviles) puede ir dentro del core o en otro PC. Igual que la radio,
+**el PC del UPF llama al core** y al core le da igual su IP:
+
+1. Core: `sudo emparella-upf <nombre>` (p. ej. `upf1`) → código con `ca.crt`, el certificado del UPF
+   (CN `agent-upf-<nombre>`) y la IP:puerto del core (9544). Se guarda en `certs-5g/emparellament-upf-<nombre>.txt`.
+2. PC del UPF: `sudo bash scripts/install_upf.sh` y pega el código. Instala Docker, la imagen
+   `docker_open5gs` (si no está: la construye, o `--imatge fichero.tar`, o `--imatge-de usuario@IP_core` por
+   ssh), crea `/opt/upf5g` (compose, `.env`, `upf/` con `advertise: UPF_HOST_IP`) y el servicio
+   `agent5g-upf` (independiente del agente de la radio: pueden estar en el mismo PC).
+3. Cuando el agente del UPF llama, el core:
+   - le pasa lo que necesita de su `.env` (subredes de los móviles, `MAX_NUM_UE`, interfaces, `PCSCF_IP`) y
+     las dos IP sacadas de la propia conexión: **`SMF_IP` = IP del core que ve el UPF** y
+     **`UPF_HOST_IP` = IP del UPF que ve el core**. El agente del UPF las escribe en su `.env` y (re)crea el
+     contenedor `upf` solo si algo ha cambiado;
+   - si el **modo automático** está activo (por defecto) y el core usa su propio UPF (o el elegido ya no
+     está), **lo selecciona**: `smf/smf.yaml` → `pfcp: server: advertise <IP core>` y `client: upf: <IP del UPF>`;
+     compose → `upf` con `profiles: ["upf_local"]` (no arranca) y `8805:8805/udp` publicado en el `smf`
+     (líneas marcadas `# panel5g: UPF separat`, copia antes de cada cambio); quita el `upf` local y recrea el `smf`;
+   - si el UPF elegido cambia de IP (DHCP), al volver a llamar se aplica la IP nueva sola.
+4. Solo un UPF activo a la vez: los demás que llamen quedan conectados con el contenedor parado.
+   Tras reiniciar el core, el UPF elegido tiene 30 s para volver a llamar antes de que se elija otro.
+
+Pestaña **UPF** del panel: dónde está el UPF, asociación PFCP del SMF, interruptor «Fer servir sol el UPF que
+truqui al core», «Torna a ajuntar el UPF al core» (deshace todo, arranca el `upf` del core, para el remoto y
+apaga el modo automático para que no se vuelva a separar solo), «Fes servir aquest UPF» para cada PC conectado,
+y «UPF sin agente» por IP (montaje a mano). Monitorización **por HTTP**: métricas del servidor de Open5GS
+del UPF (`http://UPF_IP:9091/metrics`: sesiones, paquetes y bytes GTP de N3, peticiones N4), contadores de
+`ogstun` dentro del contenedor, logs (`docker logs upf` y `log/upf.log` en Registres) y el estado de cada
+PC en Estat. Con la gNB en el mismo PC (se detecta), el 2152 no se publica y la gNB llega al UPF por el puente
+de Docker (`UPF_ADVERTISE_IP` = IP del contenedor); si no, se publica `2152/udp` y se anuncia la IP del PC.
+Con una VPN de túnel completo como ruta por defecto se añade `ip rule from <red del UPF> lookup main`.
+
+Agente del core: `GET /upf`, `POST /upf {accio: separa|ajunta|auto}`, `GET /upfs`, `/upf/<nombre>/<petición>`.
+Agente del UPF: `POST /upf_configura`, `GET /upf_estat`, `GET /upf_metriques`. Si `core5g.sh` se ejecuta con
+el extra «sense UPF», sigue funcionando: ajuntar desde el panel también quita sus marcas `# core5g: sense UPF`.
+
+## Desinstalar y reinstalar
+`sudo bash scripts/desinstala.sh` (o `core5g.sh` → 5) muestra qué hay instalado en ese PC y quita lo que
+elijas: **agente del core** (agent5g, capturas, `emparella-*`), **panel web** (contenedor e imagen),
+**agente de la radio** o **UPF separado** (agent5g-upf, contenedor `upf`, red `upf5g`). Sin preguntas:
+`--core --panell --radio --upf --tot -y`. Nunca toca el core 5G, el gNB, los abonados ni la CA (los
+emparejamientos siguen valiendo). Guarda `panel.yaml` en `/var/lib/panel5g/` y el certificado de la radio/UPF
+en `/var/lib/agent5g*/emparellament/`, así que al reinstalar **no hace falta volver a pegar el código**.
+`--purga` borra también esas copias y `/var/lib/agent5g*`.
+
+Después, los instaladores solo instalan lo que falta: `core5g.sh` → Instal·lar (si el agente y el panel ya
+están no los toca), `install_radio.sh` (si el agente ya está, no pide código ni lo toca), `install_upf.sh`
+(si ya está, no hace nada). `--forcar` reinstala igualmente. Para actualizar el core sin desinstalar sigue
+existiendo `scripts/actualitzar.sh`.
 
 ## Servicio VoIP activable
 Abonats i VoIP → «Servei de telefonia» → Activado. El agente del core, en segundo plano:

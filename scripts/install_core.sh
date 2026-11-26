@@ -101,10 +101,11 @@ systemctl restart ngap-capture ua-capture agent5g
 # ---- 4. eines d'emparellament (emparella-radio <nom>); la IP del core va dins del codi
 printf '%s\n' "$IP" > /etc/agent5g/core_ip
 install -d -m 755 /opt/agent5g/eines
-install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
+install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" "$SRC/scripts/emparella_upf.sh" /opt/agent5g/eines/
 ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
-# perquè emparella-radio trobi els certificats encara que no siguin a /root/certs-5g
-sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh
+ln -sf /opt/agent5g/eines/emparella_upf.sh /usr/local/sbin/emparella-upf
+# perquè emparella-radio/-upf trobin els certificats encara que no siguin a /root/certs-5g
+sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS}#" /opt/agent5g/eines/emparella_radio.sh /opt/agent5g/eines/emparella_upf.sh
 
 sleep 3
 for s in agent5g ngap-capture ua-capture; do
@@ -125,6 +126,7 @@ for R in $RADIOS; do
   /usr/local/sbin/emparella-radio "$R" "$CERTS" || echo "    AVÍS: no s'ha pogut emparellar $R"
 done
 [[ -n $RADIOS ]] || info "per emparellar una ràdio més endavant: sudo emparella-radio <nom> (p. ex. aula1)"
+info "UPF en un altre PC: sudo emparella-upf <nom> (p. ex. upf1) i, en aquell PC, install_upf.sh amb el codi"
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; then
-  info "AVÍS: ufw és actiu i no el toco. Perquè les ràdios hi puguin trucar: sudo ufw allow 9544/tcp comment agent5g-radios"
+  info "AVÍS: ufw és actiu i no el toco. Perquè les ràdios hi puguin trucar: sudo ufw allow 9544/tcp comment agent5g-radios-upf"
 fi

@@ -59,10 +59,11 @@ if [[ -z $CERTS_EINES ]]; then                 # instal·lacions antigues: on é
 fi
 if [[ -n $CERTS_EINES ]]; then
   install -d -m 755 /opt/agent5g/eines
-  install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" /opt/agent5g/eines/
-  [[ -n $CERTS_EINES ]] && sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS_EINES}#" /opt/agent5g/eines/emparella_radio.sh
+  install -m 755 "$SRC/scripts/gen_certs.sh" "$SRC/scripts/emparella_radio.sh" "$SRC/scripts/emparella_upf.sh" /opt/agent5g/eines/
+  sed -i "s#^CERTS=\${2:-/root/certs-5g}#CERTS=\${2:-$CERTS_EINES}#" /opt/agent5g/eines/emparella_radio.sh /opt/agent5g/eines/emparella_upf.sh
   ln -sf /opt/agent5g/eines/emparella_radio.sh /usr/local/sbin/emparella-radio
-  echo ">> emparella-radio <nom> instal·lat (CA a $CERTS_EINES)"
+  ln -sf /opt/agent5g/eines/emparella_upf.sh /usr/local/sbin/emparella-upf
+  echo ">> emparella-radio <nom> i emparella-upf <nom> instal·lats (CA a $CERTS_EINES)"
 else
   echo ">> AVÍS: no trobo la CA (ca/ca.key): emparella_radio.sh <nom> <carpeta_certs> a mà"
 fi
@@ -89,8 +90,19 @@ for l in ls:
     dins = False
     out.append(l)
 if canvi:
-    open(f, 'w').write('\n'.join(out))
     print('>> panel.yaml: comentada la ràdio fixa (ara la ràdio truca al core)')
+# indicadors de l'estat dels PCs amb UPF separat (rol "upf"), si encara no hi són
+txt = '\n'.join(out)
+if re.search(r'^estat_logs:', txt, re.M) and not re.search(r'^  upf:', txt, re.M):
+    txt = re.sub(r'^estat_logs:[^\n]*\n', lambda m: m.group(0) +
+                 '  upf:\n'
+                 '    - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\\\d+)"}\n'
+                 '    - {etiqueta: "PFCP amb l\'SMF",          contenidor: upf, regex: "(PFCP (?:de-)?associated.*)$"}\n',
+                 txt, count=1, flags=re.M)
+    canvi = True
+    print('>> panel.yaml: afegit l\'estat dels PCs amb UPF')
+if canvi:
+    open(f, 'w').write(txt)
 PY
 systemctl daemon-reload
 systemctl enable --now ua-capture
@@ -99,10 +111,12 @@ systemctl restart agent5g
 sleep 4
 systemctl --no-pager --lines=0 status ua-capture agent5g | grep -E '●|Active:'
 if systemctl is-active -q ua-capture && systemctl is-active -q agent5g; then
-  echo ">> Fet. Panell: https://$PANEL_IP:8443 (Ctrl+F5). Ha de dir 'Versió v15' a la barra lateral."
+  echo ">> Fet. Panell: https://$PANEL_IP:8443 (Ctrl+F5). Ha de dir 'Versió v17' a la barra lateral."
   echo "   VoIP: Abonats i VoIP > Servei de telefonia > Activat (el core 5G no s'atura)."
   echo "   Ràdios: al core, sudo emparella-radio <nom>; a la ràdio, sudo bash scripts/enllaca_radio.sh codi.txt"
   echo "   (ràdio ja instal·lada) o install_radio.sh (nova). La ràdio truca sola al core $PANEL_IP:9544."
+  echo "   UPF en un altre PC: al core, sudo emparella-upf <nom>; en aquell PC, sudo bash scripts/install_upf.sh"
+  echo "   (pestanya UPF del panell: separar o tornar a ajuntar el UPF)."
 else
   echo ">> ALERTA: algun servei no ha arrencat. Per tornar enrere:"
   echo "   systemctl disable --now ua-capture; cp $BK/agent5g.py /opt/agent5g/; systemctl restart agent5g"

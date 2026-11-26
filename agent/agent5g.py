@@ -37,6 +37,14 @@ permès. Només sap fer operacions d'una llista blanca:
   GET  /audit?tail=N
   GET  /radios                 -> (core) ràdios connectades al core per l'enllaç ràdio -> core
   GET|POST /radio/<id>/<camí>  -> (core) reenvia la petició a aquella ràdio per l'enllaç
+  GET  /upf                    -> (core) on és el UPF (dins o separat), PFCP de l'SMF, PCs amb UPF connectats
+  POST /upf                    -> (core) {"accio": "separa", "upf_id"|"ip"} | {"accio": "ajunta"} |
+                                  {"accio": "auto", "valor": bool}: smf.yaml + compose i recrea l'smf
+  GET  /upfs                   -> (core) PCs amb UPF connectats per l'enllaç
+  GET|POST /upf/<id>/<camí>    -> (core) reenvia la petició a aquell PC amb UPF
+  POST /upf_configura          -> (PC del UPF) {"actiu", "env"}: el core li diu la configuració
+  GET  /upf_estat              -> (PC del UPF) contenidor, .env, PFCP i mètriques
+  GET  /upf_metriques          -> (PC del UPF) mètriques HTTP del UPF (Prometheus d'Open5GS) + ogstun
 
 Enllaç ràdio -> core: amb "core": "IP_del_core" a la configuració, la ràdio no escolta cap
 port; és ella qui obre connexions mTLS cap al port 9544 de l'agent del core (com la gNodeB
@@ -1599,6 +1607,11 @@ def apply_services(services):
     for s in services:
         if s not in CFG['services']:
             raise ValueError(f'servei no permès: {s}')
+    if 'upf' in services and upf_gestionat() and upf_estat_fitxers()['mode'] == 'remot':
+        # UPF separat: anomenar-lo a "up" l'arrencaria igualment (el perfil no l'atura)
+        services = [s for s in services if s != 'upf']
+        if not services:
+            return 0, 'UPF separat: el upf d\'aquest core no s\'arrenca'
     args = compose_base() + ['up', '-d', '--no-deps'] + list(dict.fromkeys(services))
     rc, out = run(args, timeout=CFG['apply_timeout'])
     return rc, out[-8000:]
@@ -2420,6 +2433,567 @@ def audit_tail(n):
 
 
 # ---------------------------------------------------------------- HTTP
+# ---------------------------------------------------------------- UPF separat
+# Com la ràdio: és el PC del UPF qui truca al core (agent amb "role": "upf" i "core": IP),
+# amb un certificat de la CA amb CN agent-upf-<nom>. Al core li és igual la IP del UPF:
+# la treu de la mateixa connexió (i la seva pròpia IP, la que veu el UPF, també).
+#
+# Quan un UPF truca, el core li passa la configuració que ha de tenir (subxarxes dels
+# mòbils, interfícies, IP de l'SMF...) i, si el mode automàtic és actiu, el selecciona:
+#   smf/smf.yaml   pfcp server: advertise <IP del core>   pfcp client upf: <IP del UPF>
+#   compose        upf amb profiles: ["upf_local"] (no arrenca) i 8805/udp de l'smf publicat
+# i recrea l'smf. "Ajuntar" ho desfà i torna a arrencar el upf del core. Només un UPF
+# seleccionat alhora: els altres que truquin queden connectats però amb el upf aturat.
+# L'estat (mode, IP, quin UPF) es llegeix sempre dels fitxers; upf.json només guarda
+# quin UPF és el seleccionat i si el mode automàtic és actiu.
+UPF_MARCA = '# panel5g: UPF separat'
+UPF_MARCA_CORE5G = '# core5g: sense UPF'
+UPF_ID_RE = re.compile(r'^[A-Za-z0-9_.-]{1,64}$')
+UPF_LOCK = threading.Lock()
+# claus del .env del core que el UPF necessita (upf_init.sh) i que el core li passa
+UPF_ENV_CLAUS = ('UE_IPV4_INTERNET', 'UE_IPV4_IMS', 'MAX_NUM_UE', 'UPF_TUNTAP_MODE',
+                 'UPF_INTERNET_APN_IF_NAME', 'UPF_IMS_APN_IF_NAME', 'PCSCF_IP', 'MCC', 'MNC')
+_IP_RX = r'(\d{1,3}\.){3}\d{1,3}'
+UPF_ENV_RX = {
+    'UE_IPV4_INTERNET': re.compile(_IP_RX + r'/\d{1,2}'), 'UE_IPV4_IMS': re.compile(_IP_RX + r'/\d{1,2}'),
+    'MAX_NUM_UE': re.compile(r'\d{1,6}'), 'UPF_TUNTAP_MODE': re.compile(r'tun|tap'),
+    'UPF_INTERNET_APN_IF_NAME': re.compile(r'[A-Za-z0-9_.-]{1,15}'),
+    'UPF_IMS_APN_IF_NAME': re.compile(r'[A-Za-z0-9_.-]{1,15}'),
+    'PCSCF_IP': re.compile(_IP_RX), 'MCC': re.compile(r'\d{3}'), 'MNC': re.compile(r'\d{2,3}'),
+    'SMF_IP': re.compile(_IP_RX), 'UPF_HOST_IP': re.compile(_IP_RX),
+}
+
+
+def upf_id(cn):
+    """agent-upf-aula2 -> aula2; agent-upf -> upf."""
+    if not cn or not cn.startswith('agent-upf'):
+        return None
+    uid = cn[len('agent-upf'):].lstrip('-') or 'upf'
+    return uid if UPF_ID_RE.match(uid) else None
+
+
+def _ip_ok(ip):
+    try:
+        return ipaddress.ip_address(ip).version == 4
+    except (ValueError, TypeError):
+        return False
+
+
+def _ip_cap_a(ip):
+    """IP d'aquest equip per on surt el trànsit cap a `ip` (no envia res)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect((ip, 8805))
+        return s.getsockname()[0]
+
+
+def _upf_estat_path():
+    return CFG.get('upf_estat') or os.path.join(os.path.dirname(CFG['backup_dir'].rstrip('/')), 'upf.json')
+
+
+def upf_json():
+    try:
+        with open(_upf_estat_path()) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def upf_json_desa(**kw):
+    d = upf_json()
+    d.update(kw)
+    p = _upf_estat_path()
+    with open(p + '.tmp', 'w') as f:
+        json.dump(d, f, indent=1)
+    os.replace(p + '.tmp', p)
+    return d
+
+
+def _smf_path():
+    return os.path.join(CFG['project_dir'], 'smf', 'smf.yaml')
+
+
+def _upf_composes():
+    return [p for p in (os.path.join(CFG['project_dir'], f) for f in CFG['compose_files']) if os.path.isfile(p)]
+
+
+def upf_gestionat():
+    return CFG.get('role') == 'core' and os.path.isfile(_smf_path()) and bool(_upf_composes())
+
+
+def _ind(l):
+    return len(l) - len(l.lstrip(' '))
+
+
+def smf_pfcp(lines):
+    """Posicions del bloc pfcp de smf.yaml: adreça del servidor, advertise i adreça del UPF."""
+    r = {'srv': None, 'adv': None, 'cli': None, 'upf': None}
+    p_ind = None
+    part = None
+    for i, l in enumerate(lines):
+        s = l.strip()
+        if not s or s.startswith('#'):
+            continue
+        if p_ind is None:
+            if re.match(r'^\s*pfcp:\s*(#.*)?$', l):
+                p_ind = _ind(l)
+            continue
+        if _ind(l) <= p_ind:                       # fi del bloc pfcp
+            break
+        m = re.match(r'^\s*(server|client):\s*(#.*)?$', l)
+        if m:
+            part = m.group(1)
+            continue
+        if part == 'server' and r['srv'] is None:
+            if re.match(r'^\s*-\s*address:\s*\S+', l):
+                r['srv'] = i
+        elif part == 'server' and r['adv'] is None and r['srv'] is not None:
+            if re.match(r'^\s*advertise:\s*\S+', l) and _ind(l) > _ind(lines[r['srv']]):
+                r['adv'] = i
+        if part == 'client':
+            if re.match(r'^\s*upf:\s*(#.*)?$', l):
+                part = 'client-upf'
+        elif part == 'client-upf' and r['cli'] is None:
+            m = re.match(r'^(\s*-\s*address:\s*)(\S+)(.*)$', l)
+            if m:
+                r['cli'], r['upf'] = i, m.group(2)
+    return r
+
+
+def smf_transforma(lines, upf_ip, core_ip):
+    """upf_ip/core_ip = None torna al UPF del core (UPF_IP, sense advertise)."""
+    r = smf_pfcp(lines)
+    if r['srv'] is None or r['cli'] is None:
+        raise RuntimeError('smf/smf.yaml no té el format esperat (pfcp: server address / client upf address)')
+    out = list(lines)
+    m = re.match(r'^(\s*-\s*address:\s*)(\S+)(.*)$', out[r['cli']])
+    out[r['cli']] = m.group(1) + (upf_ip or 'UPF_IP')
+    srv = out[r['srv']]
+    adv_txt = ' ' * (_ind(srv) + 2) + f'advertise: {core_ip}   {UPF_MARCA}' if core_ip else None
+    if r['adv'] is not None:
+        if adv_txt:
+            out[r['adv']] = adv_txt
+        else:
+            del out[r['adv']]
+    elif adv_txt:
+        out.insert(r['srv'] + 1, adv_txt)
+    return out
+
+
+def _serveis(lines):
+    """{nom_servei: (inici, fi)} dels serveis del compose (capçaleres a 2 espais)."""
+    res, act, ini = {}, None, None
+    for i, l in enumerate(lines):
+        m = re.match(r'^  ([A-Za-z0-9_.-]+):\s*(#.*)?$', l)
+        if m or (l and not l.startswith(' ') and not l.startswith('#')):
+            if act:
+                res[act] = (ini, i)
+            act, ini = (m.group(1), i) if m else (None, None)
+    if act:
+        res[act] = (ini, len(lines))
+    return res
+
+
+def compose_transforma(lines, separa):
+    out = list(lines)
+    if not separa:
+        out = [l for l in out if not (l.rstrip().endswith(UPF_MARCA) or l.rstrip().endswith(UPF_MARCA_CORE5G))]
+    sv = _serveis(out)
+    if 'smf' not in sv:
+        return out
+    if separa:
+        ini, fi = sv['smf']
+        bloc = out[ini:fi]
+        if not any('8805:8805/udp' in l for l in bloc):
+            pi = next((ini + j for j, l in enumerate(bloc) if re.match(r'^    ports:\s*(#.*)?$', l)), None)
+            if pi is not None:
+                out.insert(pi + 1, f'      - "8805:8805/udp"  {UPF_MARCA}')
+            else:
+                out[ini + 1:ini + 1] = [f'    ports:  {UPF_MARCA}', f'      - "8805:8805/udp"  {UPF_MARCA}']
+        sv = _serveis(out)
+        if 'upf' in sv:
+            ini, fi = sv['upf']
+            if not any(re.match(r'^    profiles:', l) for l in out[ini:fi]):
+                out.insert(ini + 1, f'    profiles: ["upf_local"]  {UPF_MARCA}')
+        return out
+    # ajuntar també desfà un muntatge fet a mà (sense marques): perfil upf_local i 8805 de l'smf
+    if 'upf' in sv:
+        ini, fi = sv['upf']
+        out = out[:ini] + [l for l in out[ini:fi]
+                           if not re.match(r'^    profiles:\s*\[\s*"?upf_local"?\s*\]\s*(#.*)?$', l)] + out[fi:]
+    sv = _serveis(out)
+    ini, fi = sv['smf']
+    bloc = [l for l in out[ini:fi] if not re.match(r'^\s*-\s*"?8805:8805/udp"?\s*(#.*)?$', l)]
+    net = []
+    for j, l in enumerate(bloc):                   # "ports:" que s'ha quedat sense cap element
+        if re.match(r'^    ports:\s*(#.*)?$', l):
+            seg = next((x for x in bloc[j + 1:] if x.strip() and not x.strip().startswith('#')), '')
+            if _ind(seg) <= 4:
+                continue
+        net.append(l)
+    return out[:ini] + net + out[fi:]
+
+
+def upf_estat_fitxers():
+    lines = _read_lines(_smf_path())
+    r = smf_pfcp(lines)
+    upf = r['upf']
+    adv = None
+    if r['adv'] is not None:
+        adv = lines[r['adv']].split('advertise:', 1)[1].split('#', 1)[0].strip()
+    mode = 'local' if upf in (None, 'UPF_IP') else 'remot'
+    perfil = False
+    for p in _upf_composes():
+        c = _read_lines(p)
+        sv = _serveis(c)
+        if 'upf' in sv and any(re.match(r'^    profiles:\s*\[\s*"?upf_local', l) for l in c[sv['upf'][0]:sv['upf'][1]]):
+            perfil = True
+    return {'mode': mode, 'ip': upf if mode == 'remot' else None, 'advertise': adv, 'perfil_upf_local': perfil}
+
+
+def _upf_contenidor_del_core():
+    rc, out = run([CFG['docker_bin'], 'inspect', '-f',
+                   '{{index .Config.Labels "com.docker.compose.project.working_dir"}}', 'upf'])
+    if rc != 0:
+        return False
+    try:
+        return os.path.realpath(out.strip()) == os.path.realpath(CFG['project_dir'])
+    except OSError:
+        return False
+
+
+def upf_aplica(separa, upf_ip=None, core_ip=None):
+    """Canvia els fitxers (amb còpia) i recrea l'smf. Cal tenir LOCK."""
+    if not upf_gestionat():
+        raise LookupError('aquest equip no és un core amb smf.yaml')
+    if separa and not (_ip_ok(upf_ip) and _ip_ok(core_ip)):
+        raise ValueError('IP del UPF o del core invàlida')
+    files = {}
+    smf = _read_lines(_smf_path())
+    n = smf_transforma(smf, upf_ip if separa else None, core_ip if separa else None)
+    if n != smf:
+        files[_smf_path()] = n
+    for p in _upf_composes():
+        c = _read_lines(p)
+        nc = compose_transforma(c, separa)
+        if nc != c:
+            files[p] = nc
+    baks = _commit(files) if files else {}
+    out = ''
+    if separa:
+        if _upf_contenidor_del_core():
+            rc, o = run([CFG['docker_bin'], 'rm', '-f', 'upf'], timeout=60)
+            out += o
+        rc, o = run(compose_base() + ['up', '-d', '--no-deps', '--force-recreate', 'smf'], timeout=CFG['apply_timeout'])
+    else:
+        rc, o = run(compose_base() + ['up', '-d', '--no-deps', 'upf'], timeout=CFG['apply_timeout'])
+        out += o
+        if rc == 0:
+            rc, o = run(compose_base() + ['up', '-d', '--no-deps', '--force-recreate', 'smf'],
+                        timeout=CFG['apply_timeout'])
+    out += o
+    if rc != 0:
+        raise RuntimeError('docker compose ha fallat: ' + out[-600:])
+    return {'copies': baks, 'canviat': sorted(os.path.relpath(p, CFG['project_dir']) for p in files),
+            'sortida': out[-2000:]}
+
+
+def _upf_env_per_al_upf(core_ip, upf_ip):
+    env = read_env()
+    d = {k: env[k] for k in UPF_ENV_CLAUS if env.get(k) and UPF_ENV_RX[k].fullmatch(env[k])}
+    d['SMF_IP'] = core_ip            # al PC del UPF, l'SMF és la IP del core (8805 publicat)
+    d['UPF_HOST_IP'] = upf_ip        # Node ID PFCP del UPF: la IP per on el veu el core
+    return d
+
+
+def _upf_connectats():
+    return {u['id']: u for u in (ENLLAC.upfs() if ENLLAC else []) if u['connectat']}
+
+
+def _upf_configura(uid, actiu, core_ip=None, upf_ip=None):
+    cos = {'actiu': bool(actiu)}
+    if actiu:
+        cos['env'] = _upf_env_per_al_upf(core_ip, upf_ip)
+    codi, _ct, dades = ENLLAC.peticio('upf:' + uid, 'POST', '/upf_configura', 'core',
+                                     json.dumps(cos).encode(), timeout=CFG['apply_timeout'] + 30)
+    try:
+        r = json.loads(dades or b'{}')
+    except ValueError:
+        r = {}
+    if codi != 200:
+        raise RuntimeError(f'UPF {uid}: {r.get("error") or codi}')
+    return r
+
+
+def _upf_atura_altres(excepte=None):
+    """Atura el upf de tots els PCs connectats menys `excepte`: només un UPF parla amb l'SMF."""
+    for altre in _upf_connectats():
+        if altre != excepte:
+            try:
+                _upf_configura(altre, False)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def upf_selecciona(uid, user='core', auto=True):
+    """Fa servir el UPF `uid` (connectat al core): li passa la configuració i separa el core."""
+    con = _upf_connectats()
+    if uid not in con:
+        raise LookupError(f'el UPF "{uid}" no està connectat al core')
+    u = con[uid]
+    upf_ip, core_ip = u['ip'], u['ip_core']
+    r_upf = _upf_configura(uid, True, core_ip, upf_ip)
+    with LOCK:
+        est = upf_estat_fitxers()
+        if est['mode'] == 'remot' and est['ip'] == upf_ip and est['advertise'] == core_ip and est['perfil_upf_local']:
+            r = {'canviat': [], 'copies': {}}
+        else:
+            r = upf_aplica(True, upf_ip, core_ip)
+        upf_json_desa(upf_id=uid, darrer_upf=uid, ip=upf_ip, auto=auto, des_de=now())
+    _upf_atura_altres(uid)                  # un sol UPF actiu
+    audit('core', user, 'upf-separa', {'upf': uid, 'ip': upf_ip, 'core_ip': core_ip, 'canviat': r['canviat']})
+    print(f'agent5g: UPF "{uid}" ({upf_ip}) seleccionat; l\'SMF hi apunta (anunciant {core_ip})', flush=True)
+    return {'upf_id': uid, 'ip': upf_ip, 'core_ip': core_ip, 'upf': r_upf, **r}
+
+
+def upf_separa_ip(ip, user):
+    """Separa cap a un UPF sense agent (muntatge fet a mà)."""
+    if not _ip_ok(ip):
+        raise ValueError('IP del UPF invàlida')
+    core_ip = _ip_cap_a(ip)
+    with LOCK:
+        r = upf_aplica(True, ip, core_ip)
+        upf_json_desa(upf_id=None, ip=ip, auto=False, des_de=now())
+    _upf_atura_altres()
+    audit('core', user, 'upf-separa', {'ip': ip, 'core_ip': core_ip, 'canviat': r['canviat']})
+    return {'upf_id': None, 'ip': ip, 'core_ip': core_ip, **r}
+
+
+def upf_ajunta(user):
+    sel = upf_json().get('upf_id')
+    with LOCK:
+        r = upf_aplica(False)
+        upf_json_desa(upf_id=None, ip=None, auto=False, des_de=now())   # no es torna a separar sol
+    _upf_atura_altres()                     # que cap UPF remot continuï parlant amb l'SMF
+    audit('core', user, 'upf-ajunta', {'abans': sel, 'canviat': r['canviat']})
+    print('agent5g: UPF de nou dins del core', flush=True)
+    return {'upf_id': None, **r}
+
+
+def upf_auto(valor, user):
+    """Activa/desactiva el mode automàtic. En activar-lo amb el UPF dins del core i algun UPF
+    connectat, el fa servir ja (el darrer que es va fer servir, si hi és)."""
+    j = upf_json_desa(auto=valor)
+    if valor and upf_gestionat() and upf_estat_fitxers()['mode'] == 'local':
+        con = _upf_connectats()
+        if con:
+            uid = j.get('darrer_upf') if j.get('darrer_upf') in con else sorted(con)[0]
+            return {**upf_selecciona(uid, user, auto=True), 'auto': True}
+    return {'auto': valor}
+
+
+def upf_rebut(uid):
+    """Un UPF acaba de trucar al core (o ha canviat d'IP): decideix si se selecciona."""
+    # Si el core en fa servir un altre que ara no hi és (p. ex. acaba de reiniciar-se el core i
+    # encara no ha tornat a trucar), se li donen 30 s abans de canviar-lo per aquest.
+    sel = upf_json().get('upf_id')
+    for _ in range(15):
+        if not sel or sel == uid or sel in _upf_connectats():
+            break
+        time.sleep(2)
+    with UPF_LOCK:
+        try:
+            if not upf_gestionat():
+                return
+            j = upf_json()
+            est = upf_estat_fitxers()
+            con = _upf_connectats()
+            sel = j.get('upf_id')
+            if sel == uid and est['mode'] == 'remot':
+                tria = True                     # el mateix UPF (potser amb una IP nova)
+            elif not j.get('auto', True):
+                tria = False                    # s'ha ajuntat a mà: no es torna a separar sol
+            elif est['mode'] == 'local':
+                tria = True
+            else:                               # ja n'hi ha un altre: només si aquell no hi és
+                tria = not (sel and sel in con)
+            if tria:
+                upf_selecciona(uid, 'auto', auto=True)
+            else:
+                _upf_configura(uid, False)
+                print(f'agent5g: UPF "{uid}" connectat però no seleccionat (el core fa servir '
+                      f'{"el seu UPF" if est["mode"] == "local" else est["ip"]})', flush=True)
+        except Exception as e:  # noqa: BLE001
+            print(f'agent5g: UPF "{uid}": no s\'ha pogut configurar: {type(e).__name__}: {str(e)[:200]}', flush=True)
+
+
+def prom_parse(txt):
+    """Text de Prometheus -> {nom: suma}, [{nom, etiquetes, valor}]."""
+    tot, det = {}, []
+    for l in txt.splitlines():
+        if not l or l.startswith('#'):
+            continue
+        m = re.match(r'^([A-Za-z_:][A-Za-z0-9_:]*)(\{([^}]*)\})?\s+([-+0-9.eE]+|NaN|[+-]Inf)', l)
+        if not m:
+            continue
+        try:
+            v = float(m.group(4))
+        except ValueError:
+            continue
+        nom = m.group(1)
+        tot[nom] = tot.get(nom, 0) + v
+        if len(det) < 400:
+            det.append({'nom': nom, 'etiquetes': m.group(3) or '', 'valor': v})
+    return tot, det
+
+
+def upf_metriques(ip, port=9091):
+    """Mètriques de l'UPF per HTTP (servidor de mètriques d'Open5GS) + comptadors de les ogstun."""
+    res = {'url': f'http://{ip}:{port}/metrics', 'ok': False}
+    try:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(res['url'], timeout=4) as r:
+            tot, det = prom_parse(r.read(4 << 20).decode('utf-8', 'replace'))
+        res.update(ok=True, total=tot, detall=det)
+    except (OSError, urllib.error.URLError, ValueError) as e:
+        res['error'] = f'{type(e).__name__}: {str(e)[:150]}'
+    rc, out = run([CFG['docker_bin'], 'exec', 'upf', 'cat', '/proc/net/dev'], timeout=10)
+    ifs = {}
+    if rc == 0:
+        for l in out.splitlines()[2:]:
+            nom, _, rest = l.partition(':')
+            nom, c = nom.strip(), rest.split()
+            if len(c) >= 10 and nom != 'lo':
+                ifs[nom] = {'rx_bytes': int(c[0]), 'rx_paquets': int(c[1]), 'tx_bytes': int(c[8]),
+                            'tx_paquets': int(c[9])}
+    res['interficies'] = ifs
+    res['hora'] = now()
+    return res
+
+
+def pfcp_log(contenidor, n=3000):
+    """Darrera associació PFCP que diu el log (Open5GS: "PFCP associated [ip]:8805")."""
+    rc, out = run([CFG['docker_bin'], 'logs', '--tail', str(n), '--timestamps', contenidor], timeout=20)
+    if rc != 0:
+        return None
+    for l in reversed(out.splitlines()):
+        m = re.search(r'PFCP (de-)?associated\s*\[?([0-9a-fA-F.:]+?)\]?(:\d+)?\s*$', l) or \
+            re.search(r'PFCP (de-)?associated.*?\[([0-9a-fA-F.:]+)\]', l)
+        if m:
+            return {'associat': not m.group(1), 'ip': m.group(2), 'quan': l.split(' ', 1)[0], 'linia': l[-200:]}
+    return None
+
+
+def upf_core_estat():
+    if not upf_gestionat():
+        raise LookupError('aquest equip no gestiona UPF')
+    est = upf_estat_fitxers()
+    j = upf_json()
+    con = ENLLAC.upfs() if ENLLAC else []
+    out = {**est, 'auto': j.get('auto', True), 'upf_id': j.get('upf_id') if est['mode'] == 'remot' else None,
+           'des_de': j.get('des_de'), 'upfs': con, 'pfcp': pfcp_log('smf'), 'rep_upfs': ENLLAC is not None}
+    if est['mode'] == 'local':
+        env = read_env()
+        if _ip_ok(env.get('UPF_IP')):
+            out['metriques'] = upf_metriques(env['UPF_IP'])
+    return out
+
+
+# ---- costat UPF (agent amb "role": "upf")
+def _upf_cfg():
+    u = CFG.get('upf') or {}
+    return {'gnb_local': bool(u.get('gnb_local')), 'xarxa': u.get('xarxa') or '172.23.0.0/24',
+            'upf_ip': u.get('upf_ip') or '172.23.0.8', 'regla_main': bool(u.get('regla_main'))}
+
+
+def _env_posa(lines, valors):
+    out, pend = list(lines), dict(valors)
+    for i, l in enumerate(out):
+        m = LINE_RE.match(l)
+        if m and m.group(2) in pend:
+            out[i] = f'{m.group(1)}{m.group(2)}{m.group(3)}{pend.pop(m.group(2))}{m.group(5)}'
+    if pend:
+        fi = len(out)
+        while fi and not out[fi - 1].strip():      # abans de les línies buides del final
+            fi -= 1
+        out[fi:fi] = ['# del core (panel5g)'] + [f'{k}={v}' for k, v in pend.items()]
+    return out
+
+
+def _upf_corrent():
+    rc, out = run([CFG['docker_bin'], 'inspect', '-f', '{{.State.Running}}', 'upf'])
+    return rc == 0 and out.strip() == 'true'
+
+
+def _regla_main():
+    """Amb una VPN de túnel complet, el trànsit dels mòbils ha de sortir per la LAN (taula main)."""
+    u = _upf_cfg()
+    if not u['regla_main']:
+        return
+    rc, out = run(['ip', 'rule', 'show'])
+    if f'from {u["xarxa"]} lookup main' not in out:
+        run(['ip', 'rule', 'add', 'from', u['xarxa'], 'lookup', 'main', 'priority', '100'])
+
+
+def upf_configura(data):
+    """(PC del UPF) El core diu la configuració i si aquest UPF ha d'estar actiu."""
+    if CFG.get('role') != 'upf':
+        raise LookupError('aquest equip no és un UPF')
+    if not isinstance(data, dict):
+        raise ValueError('cos invàlid')
+    actiu = bool(data.get('actiu'))
+    canviat = False
+    if actiu:
+        env = data.get('env')
+        if not isinstance(env, dict):
+            raise ValueError('falta env')
+        nous = {}
+        for k, v in env.items():
+            if k not in UPF_ENV_RX or not isinstance(v, str) or not UPF_ENV_RX[k].fullmatch(v):
+                raise ValueError(f'clau o valor no permès: {k}')
+            nous[k] = v
+        for k in ('SMF_IP', 'UPF_HOST_IP'):
+            if k not in nous:
+                raise ValueError(f'falta {k}')
+        u = _upf_cfg()
+        nous['UPF_IP'] = u['upf_ip']
+        nous['TEST_NETWORK'] = u['xarxa']
+        # GTP-U (N3): amb la gNB al mateix PC, la gNB arriba al contenidor pel pont de Docker
+        # (el 2152 del host ja és seu); si no, la gNB hi arriba per la IP del PC.
+        nous['UPF_ADVERTISE_IP'] = u['upf_ip'] if u['gnb_local'] else nous['UPF_HOST_IP']
+        env_ara = read_env()
+        dif = {k: v for k, v in nous.items() if env_ara.get(k) != v}
+        if dif:
+            backup_env()
+            atomic_write(CFG['_env_path'], '\n'.join(_env_posa(_read_lines(CFG['_env_path']), dif)))
+            canviat = True
+        _regla_main()
+        if canviat or not _upf_corrent():
+            args = compose_base() + ['up', '-d', '--no-deps'] + (['--force-recreate'] if canviat else []) + ['upf']
+            rc, out = run(args, timeout=CFG['apply_timeout'])
+            if rc != 0:
+                raise RuntimeError('docker compose up upf ha fallat: ' + out[-600:])
+        print(f'agent5g: UPF actiu (SMF {nous["SMF_IP"]}, anunciant {nous["UPF_HOST_IP"]}'
+              f'{", configuració nova" if canviat else ""})', flush=True)
+    else:
+        if _upf_corrent():
+            run(compose_base() + ['stop', 'upf'], timeout=CFG['apply_timeout'])
+            print('agent5g: UPF aturat (el core no el fa servir)', flush=True)
+    upf_json_desa(actiu=actiu, des_de=now())
+    return {'actiu': actiu, 'canviat': canviat, 'corrent': _upf_corrent()}
+
+
+def upf_propi_estat():
+    if CFG.get('role') != 'upf':
+        raise LookupError('aquest equip no és un UPF')
+    u = _upf_cfg()
+    env = read_env()
+    return {'actiu': upf_json().get('actiu'), 'corrent': _upf_corrent(), 'config': u,
+            'env': {k: env.get(k) for k in ('SMF_IP', 'UPF_HOST_IP', 'UPF_ADVERTISE_IP', 'UPF_IP',
+                                            'UE_IPV4_INTERNET', 'UE_IPV4_IMS')},
+            'pfcp': pfcp_log('upf') if _upf_corrent() else None,
+            'metriques': upf_metriques(u['upf_ip']) if _upf_corrent() else None}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = 'agent5g'
     timeout = 30
@@ -2466,6 +3040,8 @@ class Handler(BaseHTTPRequestHandler):
     def via_enllac(self, method):
         """(core) /radios i /radio/<id>/... -> enllaç amb les ràdios. True si l'ha atès."""
         path = urlparse(self.path).path
+        if path == '/upfs' or path.startswith('/upf/'):
+            return self.via_enllac_upf(method, path)
         if path != '/radios' and not path.startswith('/radio/'):
             return False
         if ENLLAC is None:
@@ -2490,6 +3066,35 @@ class Handler(BaseHTTPRequestHandler):
             return True
         except Exception as e:  # noqa: BLE001
             self.send_json(502, {'error': f'ràdio {rid}: {type(e).__name__}'})
+            return True
+        self.send_response(codi)
+        self.send_header('Content-Type', ctype)
+        self.send_header('Content-Length', str(len(dades)))
+        self.send_header('Cache-Control', 'no-store')
+        self.end_headers()
+        self.wfile.write(dades)
+        return True
+
+    def via_enllac_upf(self, method, path):
+        if ENLLAC is None:
+            self.send_json(404, {'error': 'aquest equip no rep UPF (enllaç desactivat)'})
+            return True
+        if path == '/upfs':
+            self.send_json(200, {'upfs': ENLLAC.upfs()})
+            return True
+        uid, _, cami = self.path[len('/upf/'):].partition('/')
+        try:
+            body = self.body_raw() if method == 'POST' else None
+            codi, ctype, dades = ENLLAC.peticio('upf:' + uid, method, '/' + cami, self.user(), body,
+                                                timeout=CFG['apply_timeout'] + 30 if method == 'POST' else 60)
+        except LookupError as e:
+            self.send_json(503, {'error': str(e)})
+            return True
+        except ValueError as e:
+            self.send_json(400, {'error': str(e)})
+            return True
+        except Exception as e:  # noqa: BLE001
+            self.send_json(502, {'error': f'UPF {uid}: {type(e).__name__}'})
             return True
         self.send_response(codi)
         self.send_header('Content-Type', ctype)
@@ -2527,7 +3132,10 @@ class Handler(BaseHTTPRequestHandler):
                                      'radio_ues': bool(_radio_cfg()),
                                      'enllac': ({**ENLLAC_ESTAT, 'connectat': ENLLAC_ESTAT['connexions'] > 0}
                                                 if CFG.get('core') else None),
-                                     'rep_radios': ENLLAC is not None})
+                                     'rep_radios': ENLLAC is not None,
+                                     'upf_gestionat': upf_gestionat(),
+                                     'upf': ({'actiu': upf_json().get('actiu'), **_upf_cfg()}
+                                             if CFG.get('role') == 'upf' else None)})
             elif url.path == '/env':
                 self.send_json(200, {'env': public_env()})
             elif url.path == '/env/backups':
@@ -2576,6 +3184,21 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, estat5g())
                 except LookupError:
                     self.send_json(404, {'error': 'aquest equip no té AMF'})
+            elif url.path == '/upf':
+                try:
+                    self.send_json(200, upf_core_estat())
+                except LookupError as e:
+                    self.send_json(404, {'error': str(e)})
+            elif url.path == '/upf_estat':
+                try:
+                    self.send_json(200, upf_propi_estat())
+                except LookupError as e:
+                    self.send_json(404, {'error': str(e)})
+            elif url.path == '/upf_metriques':
+                if CFG.get('role') != 'upf':
+                    self.send_json(404, {'error': 'aquest equip no és un UPF'})
+                else:
+                    self.send_json(200, upf_metriques(_upf_cfg()['upf_ip']))
             elif url.path == '/radio_ues':
                 try:
                     self.send_json(200, radio_ues())
@@ -2603,8 +3226,38 @@ class Handler(BaseHTTPRequestHandler):
         user = self.user()
         try:
             data = self.body()
+            if path == '/upf':                    # (core) cada funció agafa LOCK quan toca fitxers
+                acc = data.get('accio')
+                try:
+                    with UPF_LOCK:
+                        if acc == 'separa' and data.get('upf_id'):
+                            if not UPF_ID_RE.match(str(data['upf_id'])):
+                                raise ValueError('UPF invàlid')
+                            r = upf_selecciona(str(data['upf_id']), user)
+                        elif acc == 'separa':
+                            r = upf_separa_ip(data.get('ip'), user)
+                        elif acc == 'ajunta':
+                            r = upf_ajunta(user)
+                        elif acc == 'auto':
+                            r = upf_auto(bool(data.get('valor')), user)
+                            audit(cn, user, 'upf-auto', {'auto': r['auto']})
+                        else:
+                            raise ValueError('acció invàlida')
+                except LookupError as e:
+                    self.send_json(404, {'error': str(e)})
+                else:
+                    self.send_json(200, {'ok': True, **r})
+                return
             with LOCK:
-                if path == '/env':
+                if path == '/upf_configura':
+                    try:
+                        r = upf_configura(data)
+                    except LookupError as e:
+                        self.send_json(404, {'error': str(e)})
+                    else:
+                        audit(cn, user, 'upf-configura', {'actiu': r['actiu'], 'canviat': r['canviat']})
+                        self.send_json(200, {'ok': True, **r})
+                elif path == '/env':
                     bak, old = write_env(data.get('changes'))
                     audit(cn, user, 'env', {'old': old, 'new': data['changes'], 'backup': bak})
                     self.send_json(200, {'ok': True, 'backup': bak, 'old': old})
@@ -2750,7 +3403,7 @@ class Enllac:
             except OSError as e:         # p. ex. la xarxa encara no hi és o el port és ocupat
                 print(f'agent5g: no puc escoltar ràdios a {listen}:{port} ({e}); ho reintento', flush=True)
                 time.sleep(10)
-        print(f'agent5g: esperant ràdios a {listen}:{port} (enllaç ràdio -> core)', flush=True)
+        print(f'agent5g: esperant ràdios i UPF a {listen}:{port} (enllaç cap al core)', flush=True)
         threading.Thread(target=self._neteja, daemon=True).start()
         while True:
             try:
@@ -2766,8 +3419,10 @@ class Enllac:
             s = ctx.wrap_socket(raw, server_side=True)
             cn = _cn(s.getpeercert())
             rid = radio_id(cn)
+            if not rid and upf_id(cn):           # PC del UPF: clau "upf:<nom>"
+                rid = 'upf:' + upf_id(cn)
             if not rid:
-                self._avis(addr[0], f'enllaç rebutjat de {addr[0]}: el certificat no és de ràdio (CN={cn})')
+                self._avis(addr[0], f'enllaç rebutjat de {addr[0]}: el certificat no és de ràdio ni de UPF (CN={cn})')
                 s.close()
                 return
             s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -2781,15 +3436,27 @@ class Enllac:
             # nova = no la veiem fa més de 15 s (les connexions es renoven cada minut)
             nou = rid not in self.info or t - self.info[rid].get('darrer', 0) > 15
             inf = self.info.setdefault(rid, {'des_de': now()})
-            if nou or inf.get('ip') != addr[0]:
+            canvi = nou or inf.get('ip') != addr[0]
+            if canvi:
                 inf['des_de'] = now()
-                print(f'agent5g: ràdio "{rid}" connectada des de {addr[0]}', flush=True)
-            inf.update(ip=addr[0], darrer=t, cn=cn)
+                print(f'agent5g: ' + (f'UPF "{rid[4:]}" connectat' if rid.startswith('upf:') else
+                                      f'ràdio "{rid}" connectada') + f' des de {addr[0]}', flush=True)
+            try:
+                ip_core = s.getsockname()[0]        # la IP del core que veu aquest equip
+            except OSError:
+                ip_core = None
+            inf.update(ip=addr[0], darrer=t, cn=cn, ip_core=ip_core)
             lst = self.pool.setdefault(rid, [])
             lst.append((s, t, addr[0]))
             while len(lst) > 2 * ENLLAC_CONNS:   # una ràdio no pot acumular connexions
                 lst.pop(0)[0].close()
             self.cond.notify_all()
+        if canvi and rid.startswith('upf:'):     # un UPF ha trucat: el core decideix si el fa servir
+            threading.Thread(target=self._upf_nou, args=(rid[4:],), daemon=True).start()
+
+    def _upf_nou(self, uid):
+        time.sleep(1)                             # que hi hagi alguna connexió més en espera
+        upf_rebut(uid)
 
     def _avis(self, ip, txt):
         """El mateix error de la mateixa IP, com a molt un cop cada 5 minuts (la ràdio reintenta)."""
@@ -2845,6 +3512,8 @@ class Enllac:
         with self.cond:
             out = []
             for rid, inf in sorted(self.info.items()):
+                if ':' in rid:
+                    continue
                 n = len(self.pool.get(rid) or [])
                 connectada = n > 0 or ara - inf.get('darrer', 0) < 15
                 out.append({'id': rid, 'ip': inf.get('ip'), 'connectada': connectada,
@@ -2852,16 +3521,29 @@ class Enllac:
                             'darrer_s': round(ara - inf.get('darrer', ara))})
             return out
 
+    def upfs(self):
+        ara = time.time()
+        with self.cond:
+            out = []
+            for rid, inf in sorted(self.info.items()):
+                if not rid.startswith('upf:'):
+                    continue
+                n = len(self.pool.get(rid) or [])
+                out.append({'id': rid[4:], 'ip': inf.get('ip'), 'ip_core': inf.get('ip_core'),
+                            'connectat': n > 0 or ara - inf.get('darrer', 0) < 15, 'connexions': n,
+                            'des_de': inf.get('des_de'), 'darrer_s': round(ara - inf.get('darrer', ara))})
+            return out
+
     def peticio(self, rid, method, path, user, body=None, timeout=120):
         """Envia una petició HTTP a la ràdio per una connexió en espera -> (codi, ctype, cos)."""
         import http.client
-        if not RADIO_ID_RE.match(rid or '') or rid not in self.info:
-            raise LookupError('ràdio desconeguda')
+        if not RADIO_ID_RE.match((rid or '').replace('upf:', '', 1)) or rid not in self.info:
+            raise LookupError('equip desconegut')
         intents = 2 if method == 'GET' else 1
         for i in range(intents):
             s = self._agafa(rid)
             if s is None:
-                raise LookupError('la ràdio no està connectada al core')
+                raise LookupError('l\'equip no està connectat al core')
             try:
                 s.settimeout(timeout)
                 cap = (f'{method} {path} HTTP/1.0\r\nHost: radio\r\nX-Panel-User: {user}\r\n'
@@ -2940,11 +3622,12 @@ def _enllac_fil(core, port, ctx, n):
             if hola != ENLLAC_HOLA:
                 s.close()
                 raise ConnectionError('el core ha tancat la connexió sense acceptar-nos '
-                                      '(certificat de ràdio antic o d\'una altra CA?)')
+                                      '(certificat antic, d\'una altra CA, o agent del core antic?)')
         except (OSError, ssl.SSLError) as e:
             err = f'{type(e).__name__}: {str(e)[:160]}'
             if 'certificat' in err.lower() or 'CERT' in err:
-                err += (' (si el certificat és d\'abans de l\'enllaç ràdio->core, torna a '
+                err += (' (torna a emparellar: al core, sudo emparella-upf <nom>)' if CFG.get('role') == 'upf' else
+                        ' (si el certificat és d\'abans de l\'enllaç ràdio->core, torna a '
                         'emparellar: al core, sudo emparella-radio <nom>)')
             if n == 0 and (ENLLAC_ESTAT['darrer_error'] != err or time.time() - darrer_avis > 300):
                 darrer_avis = time.time()
@@ -2985,7 +3668,7 @@ def enllac_radio():
     core, port = CFG['core'], int(CFG.get('core_port') or ENLLAC_PORT)
     ENLLAC_ESTAT['core'] = f'{core}:{port}'
     ctx = _ctx_cap_al_core()
-    print(f'agent5g: enllaç cap al core {core}:{port} (la ràdio truca al core)', flush=True)
+    print(f'agent5g: enllaç cap al core {core}:{port} ({CFG.get("role")} truca al core)', flush=True)
     fils = [threading.Thread(target=_enllac_fil, args=(core, port, ctx, i), daemon=True)
             for i in range(int(CFG.get('enllac_connexions') or ENLLAC_CONNS))]
     for f in fils:

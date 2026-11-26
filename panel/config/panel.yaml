@@ -34,6 +34,9 @@ estat_logs:
     - {etiqueta: "UE registrats (AMF)",     contenidor: amf, regex: "Number of AMF-UEs is now (\\d+)"}
     - {etiqueta: "Sessions PDU (SMF)",      contenidor: smf, regex: "Number of SMF-Sessions is now (\\d+)"}
     - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\d+)"}
+  upf:
+    - {etiqueta: "Sessions UPF",            contenidor: upf, regex: "Number of UPF-Sessions is now (\\d+)"}
+    - {etiqueta: "PFCP amb l'SMF",          contenidor: upf, regex: "(PFCP (?:de-)?associated.*)$"}
   radio:
     - {etiqueta: "N2 amb l'AMF",            contenidor: ocudu_gnb, regex: "Connection to AMF.*completed"}
     - {etiqueta: "Cel·la",                  contenidor: ocudu_gnb, regex: "(Cell pci=.*)$"}
