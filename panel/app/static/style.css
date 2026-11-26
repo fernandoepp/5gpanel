@@ -4,6 +4,7 @@
   color-scheme: light;
   --bg: #eef1f6; --fg: #172033; --card: rgba(255, 255, 255, .94); --card-solid: #ffffff; --muted: #5b6880;
   --line: #d5dbe6; --soft: #f4f6fa; --accent: #1f4fd1; --accent-fg: #ffffff; --accent-soft: #e7edff;
+  --serie-0: #2a78d6; --serie-1: #eb6834;
   --ok: #12804a; --warn: #9a6200; --err: #c3302a; --ok-soft: #e3f4ea; --err-soft: #fde8e7;
   --side: #0f1b30; --side-fg: #c9d3e6; --side-act: #1f4fd1; --side-line: #22314d;
   --ombra: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
@@ -14,6 +15,7 @@
     color-scheme: dark;
     --bg: #0a1020; --fg: #e2e8f3; --card: rgba(18, 26, 42, .94); --card-solid: #121a2a; --muted: #93a1b8;
     --line: #26324a; --soft: #0f1728; --accent: #6f98ff; --accent-fg: #0a1020; --accent-soft: #1a2747;
+    --serie-0: #3987e5; --serie-1: #d95926;
     --ok: #4cc27a; --warn: #e0ae3a; --err: #ff7a70; --ok-soft: #12301f; --err-soft: #3a1513;
     --side: #070c18; --side-fg: #b7c3d9; --side-act: #2b4fae; --side-line: #18233a;
     --ombra: 0 1px 2px rgba(0, 0, 0, .4);
@@ -24,7 +26,8 @@
   color-scheme: dark;
   --bg: #0a1020; --fg: #e2e8f3; --card: rgba(18, 26, 42, .94); --card-solid: #121a2a; --muted: #93a1b8;
   --line: #26324a; --soft: #0f1728; --accent: #6f98ff; --accent-fg: #0a1020; --accent-soft: #1a2747;
-  --ok: #4cc27a; --warn: #e0ae3a; --err: #ff7a70; --ok-soft: #12301f; --err-soft: #3a1513;
+  --serie-0: #3987e5; --serie-1: #d95926;
+    --ok: #4cc27a; --warn: #e0ae3a; --err: #ff7a70; --ok-soft: #12301f; --err-soft: #3a1513;
   --side: #070c18; --side-fg: #b7c3d9; --side-act: #2b4fae; --side-line: #18233a;
   --ombra: 0 1px 2px rgba(0, 0, 0, .4);
   --fons: url('/static/fons5g-fosc.svg');
@@ -151,6 +154,44 @@ dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; ma
 dl.kv dt { color: var(--muted); } dl.kv dd { margin: 0; overflow-wrap: anywhere; }
 .ue-sessions table td { border-bottom: none; padding: 2px 6px 2px 0; }
 .ue-sessions p { margin: 4px 0 0; font-size: 13px; }
+/* Fitxes de mida fixa: el que no hi cap es desplaça dins la fitxa */
+.graella.ues .card.ue { height: 600px; overflow-y: auto; overscroll-behavior: contain; }
+.ue-radio { height: 104px; overflow: hidden; }
+.radio-cap { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.radio-cap h3 { margin: 0 !important; }
+button.petit { padding: 2px 10px; font-size: 12.5px; }
+.ue-radio .xips { margin-bottom: 6px; }
+.ue-radio .xip b { font-variant-numeric: tabular-nums; }
+.ue-radio p.nota { margin: 4px 0 0; font-size: 12px; }
+dialog.dlg-grafs { width: min(1100px, 94vw); max-height: 90vh; padding: 0; border: 1px solid var(--line); border-radius: 12px;
+  background: var(--card-solid); color: var(--fg); }
+dialog.dlg-grafs::backdrop { background: rgba(0, 0, 0, .45); }
+.dlg-cap { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+.dlg-cap h2 { margin: 0; font-size: 17px; }
+.dlg-cos { padding: 12px 18px 18px; overflow-y: auto; max-height: calc(90vh - 60px); }
+.dlg-ara { margin-bottom: 8px; }
+.dlg-ara dl.kv { margin-top: 6px; }
+.dlg-cos .grafs { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
+.grafs { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; margin-top: 8px; }
+.graf { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); }
+.graf figcaption { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.graf figcaption b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.graf-llegenda { display: inline-flex; gap: 10px; }
+.graf-cos { position: relative; }
+.graf svg { display: block; width: 100%; height: auto; overflow: visible; }
+.graf-reixa { stroke: var(--line); stroke-width: 1; }
+.graf-eix { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.graf-linia { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.graf-zona { fill: transparent; cursor: crosshair; }
+.graf-cursor { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.graf-punt { stroke: var(--card-solid); stroke-width: 2; }
+.serie-0 { stroke: var(--serie-0); } circle.serie-0 { fill: var(--serie-0); }
+.serie-1 { stroke: var(--serie-1); } circle.serie-1 { fill: var(--serie-1); }
+.graf-mostra { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; }
+.graf-mostra.serie-0 { background: var(--serie-0); } .graf-mostra.serie-1 { background: var(--serie-1); }
+.graf-tip { position: absolute; top: 0; right: 6px; z-index: 2; pointer-events: none; font-size: 12px; padding: 6px 8px;
+  border-radius: 6px; border: 1px solid var(--line); background: var(--card-solid); color: var(--fg); box-shadow: 0 2px 8px rgba(0,0,0,.15); white-space: nowrap; }
+.graf-tip.esquerra { right: auto; left: 40px; }
 .xips { display: flex; flex-wrap: wrap; gap: 6px; }
 .xip { font-size: 12px; padding: 2px 8px; border-radius: 6px; background: var(--soft); border: 1px solid var(--line); }
 ul.avisos { margin: 0; padding: 8px 10px 8px 26px; border-radius: 8px; background: var(--soft); font-size: 13px; }

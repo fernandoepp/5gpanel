@@ -23,6 +23,7 @@ from .devices import build as build_devices
 from .gnbs import build as build_gnbs
 from .tacdb import TacDB
 from .radio import calcula as radio_calc
+from .radio_ues import associa
 from .validation import services_for, validate, validate_plmn, validate_tdd
 
 CONFIG_DIR = Path(os.environ.get('PANEL_CONFIG_DIR', '/config'))
@@ -754,6 +755,28 @@ async def ues(t: str, historial: bool = True, s=Depends(admin_read)):
     # Només admin: IMSI i IMEI són dades personals dels qui connecten el mòbil
     _, devs, _, fonts = await _core_data(t, s['user'], historial=historial)
     return {'dispositius': devs, 'fonts': fonts}
+
+
+async def _radio_ues_de(t, user):
+    try:
+        return {'desti': t, 'titol': titol(t), 'dades': await agent(t, 'GET', '/radio_ues', user, timeout=8.0)}
+    except HTTPException as e:
+        err = 'agent sense /radio_ues (actualitza l\'agent de la ràdio)' if e.status_code == 404 else str(e.detail)
+        return {'desti': t, 'titol': titol(t), 'error': err}
+
+
+@app.get('/api/ues/{t}/radio')
+async def ues_radio(t: str, s=Depends(admin_read)):
+    """Mètriques de ràdio de cada mòbil (CQI, RI, MCS, velocitat...). Es demana després de pintar
+    les fitxes: si una ràdio no respon, les fitxes ja hi són igualment."""
+    radios = [o for o in targets() if o != t and rol(o) == 'radio']
+    viu, err = await _safe(agent(t, 'GET', '/estat5g', s['user'], timeout=15.0), {})
+    res = associa(viu, await asyncio.gather(*(_radio_ues_de(o, s['user']) for o in radios)))
+    if err:
+        res['fonts']['AMF'] = err
+    if not radios:
+        res['fonts']['ràdio'] = 'cap equip de ràdio al panell'
+    return res
 
 
 async def _radio_info(t, user):

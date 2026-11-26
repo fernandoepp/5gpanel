@@ -32,6 +32,8 @@ permès. Només sap fer operacions d'una llista blanca:
                                   i User-Agents HTTP per IP del UE (ua_capture.py)
   GET  /gnbs                   -> gNB que han fet NG Setup (captura NGAP + /var/lib/agent5g/gnbs.json)
   GET  /estat5g                -> estat en viu de l'AMF i l'SMF (API JSON d'Open5GS: gNB, UEs, sessions PDU)
+  GET  /radio_ues              -> mètriques de ràdio per UE del gNB (CQI, RI, MCS, velocitat...)
+                                  amb els identificadors NGAP de cada RNTI (log del gNB)
   GET  /audit?tail=N
 
 Només fa servir la biblioteca estàndard de Python (>= 3.8), per instal·lar-lo
@@ -2046,6 +2048,282 @@ def ua_list():
     return [{k: e.get(k) for k in keep} for e in ents if isinstance(e, dict)][:500]
 
 
+# ---------------------------------------------------------------- mètriques de ràdio per UE (ocudu)
+# El gNB (ocudu, derivat de srsRAN Project) publica cada segon, pel control remot WebSocket
+# (remote_control, port 8001; cal metrics.enable_json: true), un JSON amb les mètriques del
+# planificador per cel·la i per UE: CQI, RI, MCS, velocitat, blocs OK/KO, SNR, temps d'avançament...
+# Cada UE ve identificat pel seu RNTI (identificador de ràdio, canvia a cada connexió). Per saber de
+# quin mòbil és, el log del gNB (rrc_level i ngap_level a info o debug) diu:
+#   [RRC   ] [I] ue=19 c-rnti=0x4848: "RRC Setup Procedure" started   -> índex del CU <-> RNTI
+#   [NGAP  ] [I] Rx PDU ue=19 ran_ue=18 amf_ue=19: InitialContextSetupRequest
+#                                                     -> índex del CU <-> identificadors NGAP
+# (Compte: a les línies [DU-F1] el "ue=" és un altre índex, el del DU; no serveixen.)
+# i l'AMF d'Open5GS diu quin IMSI té cada amf_ue_ngap_id. Sense aquests logs, el panell només
+# pot deduir-ho quan hi ha un sol mòbil connectat al gNB.
+RADIO_CAMPS = ('pci', 'cqi', 'dl_ri', 'ul_ri', 'ri', 'dl_mcs', 'ul_mcs', 'dl_brate', 'ul_brate',
+               'dl_nof_ok', 'dl_nof_nok', 'ul_nof_ok', 'ul_nof_nok', 'pusch_snr_db', 'pusch_rsrp_db',
+               'pucch_snr_db', 'ta_ns', 'pusch_ta_ns', 'last_phr', 'bsr', 'dl_bs')
+# Historial curt per als gràfics del panell: una mostra per segon i per RNTI, 5 minuts.
+HIST_CAMPS = ('cqi', 'dl_ri', 'ul_ri', 'dl_mcs', 'ul_mcs', 'dl_brate', 'ul_brate', 'dl_nof_ok', 'dl_nof_nok',
+              'ul_nof_ok', 'ul_nof_nok', 'pusch_snr_db', 'pusch_rsrp_db')
+HIST_MAX = 300
+RADIO = {'ues': {}, 'hist': {}, 'connectat': False, 'error': None, 'darrer': None, 'versio': None,
+         'fil': None, 'demanat': 0.0, 'log': {'ino': None, 'pos': 0, 'rnti': {}, 'idx': {}, 'ids': {}, 'linies': 0}}
+RADIO_LOCK = threading.Lock()
+RE_RNTI = re.compile(r'\[(?:RRC|CU-CP)\s*\].*?\bue=(\d+) c-rnti=(0x[0-9a-fA-F]+)')
+RE_NGAP = re.compile(r'\[NGAP\s*\].*?\bue=(\d+) ran_ue=(\d+)(?: amf_ue=(\d+))?')
+
+
+def _radio_cfg():
+    c = CFG.get('gnb_metrics')
+    if c is False or (c is None and CFG.get('role') != 'radio'):
+        return None
+    c = dict(c or {})
+    c.setdefault('ws', 'ws://127.0.0.1:8001')
+    c.setdefault('log', 'gnb.log')            # nom d'un dels log_files
+    c.setdefault('caducitat', 5)              # s: un UE sense mètriques en aquest temps ja no hi és
+    return c
+
+
+def _ws_connecta(url, timeout):
+    """Client WebSocket mínim (RFC 6455) amb la biblioteca estàndard: només text, sense extensions."""
+    u = urlparse(url)
+    if u.scheme != 'ws' or not u.hostname:
+        raise ValueError('gnb_metrics.ws ha de ser ws://IP:port')
+    s = socket.create_connection((u.hostname, u.port or 80), timeout=timeout)
+    clau = __import__('base64').b64encode(os.urandom(16)).decode()
+    s.sendall((f'GET {u.path or "/"} HTTP/1.1\r\nHost: {u.hostname}:{u.port or 80}\r\n'
+               f'Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {clau}\r\n'
+               'Sec-WebSocket-Version: 13\r\n\r\n').encode())
+    cap = b''
+    while b'\r\n\r\n' not in cap:
+        b = s.recv(4096)
+        if not b:
+            raise ConnectionError('el gNB ha tancat la connexió')
+        cap += b
+        if len(cap) > 16384:
+            raise ConnectionError('resposta HTTP massa llarga')
+    cap, resta = cap.split(b'\r\n\r\n', 1)
+    if b' 101 ' not in cap.split(b'\r\n', 1)[0]:
+        raise ConnectionError('el gNB no accepta WebSocket: ' + cap.split(b'\r\n', 1)[0].decode('latin-1')[:80])
+    return s, bytearray(resta)
+
+
+def _ws_envia(s, text, opcode=1):
+    dades = text.encode() if isinstance(text, str) else text
+    mask = os.urandom(4)
+    n = len(dades)
+    cap = bytes([0x80 | opcode])
+    if n < 126:
+        cap += bytes([0x80 | n])
+    elif n < 65536:
+        cap += bytes([0x80 | 126]) + n.to_bytes(2, 'big')
+    else:
+        cap += bytes([0x80 | 127]) + n.to_bytes(8, 'big')
+    s.sendall(cap + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(dades)))
+
+
+def _ws_llegeix(s, buf, maxim=8 << 20):
+    """Torna el següent missatge de text complet (ajunta fragments; respon els ping)."""
+    def cal(n):
+        while len(buf) < n:
+            b = s.recv(65536)
+            if not b:
+                raise ConnectionError('el gNB ha tancat la connexió')
+            buf.extend(b)
+    msg = bytearray()
+    while True:
+        cal(2)
+        fin, op, ln = buf[0] & 0x80, buf[0] & 0x0F, buf[1] & 0x7F
+        mascara, pos = buf[1] & 0x80, 2
+        if ln == 126:
+            cal(4)
+            ln, pos = int.from_bytes(buf[2:4], 'big'), 4
+        elif ln == 127:
+            cal(10)
+            ln, pos = int.from_bytes(buf[2:10], 'big'), 10
+        if ln > maxim:
+            raise ConnectionError('missatge massa gran')
+        if mascara:
+            pos += 4
+        cal(pos + ln)
+        dades = bytes(buf[pos:pos + ln])
+        if mascara:
+            m = buf[pos - 4:pos]
+            dades = bytes(b ^ m[i % 4] for i, b in enumerate(dades))
+        del buf[:pos + ln]
+        if op == 8:
+            raise ConnectionError('el gNB ha tancat el WebSocket')
+        if op == 9:
+            _ws_envia(s, dades, opcode=10)
+            continue
+        if op == 10:
+            continue
+        msg += dades
+        if len(msg) > maxim:
+            raise ConnectionError('missatge massa gran')
+        if fin:
+            return msg.decode('utf-8', 'replace')
+
+
+def _rnti(v):
+    if isinstance(v, int):
+        return v
+    try:
+        return int(str(v), 0)
+    except ValueError:
+        return None
+
+
+def _radio_missatge(d):
+    """Desa les mètriques per UE d'un missatge del gNB. Formats: ocudu ('cells' -> 'ue_list' amb
+    els camps a dins) i srsRAN Project antic ('ue_list' -> 'ue_container')."""
+    if not isinstance(d, dict):
+        return
+    if 'metrics_version' in d or d.get('cmd') == 'metrics_subscribe':
+        RADIO['versio'] = d.get('metrics_version') or (d.get('result') or {}).get('metrics_version')
+    cells = d.get('cells')
+    if not isinstance(cells, list):
+        return
+    t = time.time()
+    with RADIO_LOCK:
+        for c in cells:
+            if not isinstance(c, dict):
+                continue
+            pci_cel = (c.get('cell_metrics') or {}).get('pci')
+            for ev in c.get('event_list') or []:
+                if isinstance(ev, dict) and ev.get('event_type') == 'ue_rem':
+                    RADIO['ues'].pop((pci_cel, _rnti(ev.get('rnti'))), None)
+                    RADIO['hist'].pop((pci_cel, _rnti(ev.get('rnti'))), None)
+            for x in c.get('ue_list') or []:
+                u = x.get('ue_container', x) if isinstance(x, dict) else None
+                if not isinstance(u, dict):
+                    continue
+                rnti = _rnti(u.get('rnti'))
+                if rnti is None:
+                    continue
+                m = {k: u[k] for k in RADIO_CAMPS if k in u and isinstance(u[k], (int, float))}
+                m.setdefault('pci', pci_cel)
+                m['rnti'] = rnti
+                m['du_ue'] = u.get('ue')
+                m['t'] = t
+                RADIO['ues'][(m.get('pci'), rnti)] = m
+                h = RADIO['hist'].setdefault((m.get('pci'), rnti), deque(maxlen=HIST_MAX))
+                h.append([round(t, 1)] + [m.get(k) for k in HIST_CAMPS])
+        RADIO['darrer'] = t
+
+
+def _radio_fil():
+    """Fil de fons: subscripció a les mètriques del gNB; es torna a connectar sol."""
+    espera = 2
+    while True:
+        cfg = _radio_cfg()
+        if time.time() - RADIO['demanat'] > 300:      # ningú mira el panell: no cal estar subscrit
+            RADIO['connectat'] = False
+            time.sleep(2)
+            continue
+        s = None
+        try:
+            s, buf = _ws_connecta(cfg['ws'], 5)
+            _ws_envia(s, json.dumps({'cmd': 'metrics_subscribe'}))
+            s.settimeout(15)                            # el gNB n'envia cada segon
+            RADIO['connectat'], RADIO['error'], espera = True, None, 2
+            while time.time() - RADIO['demanat'] <= 300:
+                txt = _ws_llegeix(s, buf)
+                try:
+                    _radio_missatge(json.loads(txt))
+                except ValueError:
+                    pass
+        except (OSError, ConnectionError, ValueError) as e:
+            RADIO['error'] = (f'sense connexió amb el control remot del gNB ({cfg["ws"]}): '
+                              f'{type(e).__name__}{": " + str(e) if str(e) else ""}')[:300]
+        finally:
+            RADIO['connectat'] = False
+            if s:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+        time.sleep(espera)
+        espera = min(espera * 2, 30)
+
+
+def _radio_log(cfg):
+    """Llegeix només el que s'ha afegit al log del gNB des de l'última vegada (com 'tail -f')."""
+    path = CFG['log_files'].get(cfg['log'])
+    st = RADIO['log']
+    if not path:
+        return 'sense log del gNB a la configuració'
+    try:
+        info = os.stat(path)
+    except OSError:
+        return 'no puc llegir el log del gNB'
+    if st['ino'] != info.st_ino or info.st_size < st['pos']:   # fitxer nou (gNB reiniciat)
+        st.update(ino=info.st_ino, pos=max(0, info.st_size - (8 << 20)), rnti={}, idx={}, ids={}, linies=0)
+    if info.st_size == st['pos']:
+        return None
+    with open(path, 'rb') as fh:
+        fh.seek(st['pos'])
+        dades = fh.read(32 << 20)
+    tall = dades.rfind(b'\n') + 1                     # només línies senceres
+    st['pos'] += tall
+    for l in dades[:tall].decode('utf-8', 'replace').splitlines():
+        m = RE_RNTI.search(l)
+        if m:
+            idx, rnti = int(m.group(1)), int(m.group(2), 16)
+            if st['idx'].get(idx) != rnti:            # índex reaprofitat o RNTI nou: oblida l'anterior
+                st['ids'].pop(idx, None)
+                st['idx'][idx] = rnti
+            st['rnti'][rnti] = idx                    # el darrer UE amb aquest RNTI
+            st['linies'] += 1
+            continue
+        m = RE_NGAP.search(l)
+        if m:
+            idx = int(m.group(1))
+            ids = st['ids'].setdefault(idx, {})
+            ids['ran_ue_ngap_id'] = int(m.group(2))
+            if m.group(3):
+                ids['amf_ue_ngap_id'] = int(m.group(3))
+            st['linies'] += 1
+    return None
+
+
+def radio_ues():
+    cfg = _radio_cfg()
+    if not cfg:
+        raise LookupError
+    RADIO['demanat'] = time.time()
+    if not RADIO['fil'] or not RADIO['fil'].is_alive():
+        RADIO['fil'] = threading.Thread(target=_radio_fil, daemon=True)
+        RADIO['fil'].start()
+        for _ in range(30):                           # primera vegada: espera el primer missatge
+            if RADIO['darrer'] or RADIO['error']:
+                break
+            time.sleep(0.1)
+    with RADIO_LOCK:
+        err_log = _radio_log(cfg)
+        lim = time.time() - float(cfg['caducitat'])
+        for k in [k for k, m in RADIO['ues'].items() if m['t'] < lim]:
+            del RADIO['ues'][k]
+            RADIO['hist'].pop(k, None)
+        st = RADIO['log']
+        out = []
+        for m in sorted(RADIO['ues'].values(), key=lambda m: (m.get('pci') or 0, m['rnti'])):
+            hist = [list(x) for x in RADIO['hist'].get((m.get('pci'), m['rnti']), ())]
+            m = dict(m, hist=hist)
+            m['rnti'] = f'0x{m["rnti"]:04x}'
+            idx = st['rnti'].get(int(m['rnti'], 16))
+            m['cu_ue'] = idx
+            m.update(st['ids'].get(idx, {}) if idx is not None else {})
+            m['edat_s'] = round(time.time() - m.pop('t'), 1)
+            out.append(m)
+    return {'ts': now(), 'connectat': RADIO['connectat'], 'error': RADIO['error'],
+            'darrer': dt.datetime.fromtimestamp(RADIO['darrer'], dt.timezone.utc).isoformat(timespec='seconds')
+            if RADIO['darrer'] else None,
+            'radio_ip': read_env().get('RADIO_IP'), 'ues': out, 'hist_camps': ['t', *HIST_CAMPS],
+            'log': err_log or ('ok' if st['linies'] else 'el log del gNB no té línies RRC/NGAP (cal rrc_level i ngap_level: info)')}
+
+
 # ---------------------------------------------------------------- audit
 def audit(client, user, action, detail, ok=True):
     rec = {'ts': now(), 'client': client, 'user': user, 'action': action,
@@ -2123,7 +2401,8 @@ class Handler(BaseHTTPRequestHandler):
                                      'project_actions': CFG['project_actions'],
                                      'ue_capture': bool(CFG.get('ue_capture')),
                                      'estat5g': 'amf' in CFG['containers'],
-                                     'nom': CFG.get('name'), 'voip': bool(voip_cfg()['permes'])})
+                                     'nom': CFG.get('name'), 'voip': bool(voip_cfg()['permes']),
+                                     'radio_ues': bool(_radio_cfg())})
             elif url.path == '/env':
                 self.send_json(200, {'env': public_env()})
             elif url.path == '/env/backups':
@@ -2172,6 +2451,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, estat5g())
                 except LookupError:
                     self.send_json(404, {'error': 'aquest equip no té AMF'})
+            elif url.path == '/radio_ues':
+                try:
+                    self.send_json(200, radio_ues())
+                except LookupError:
+                    self.send_json(404, {'error': 'aquest equip no té gNB'})
             elif url.path == '/ues':
                 try:
                     self.send_json(200, {'ues': ue_list(), 'user_agents': ua_list()})
