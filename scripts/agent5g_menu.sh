@@ -11,6 +11,8 @@
 #   3) Renovar los certificados (misma IP)
 #   4) Añadir una radio o un UPF: pide el nombre y muestra el código de emparejamiento que se
 #      pega en el instalador de ese PC (es lo mismo que sudo emparella-radio/-upf <nombre>)
+#   5) Contraseña del panel web: cambia la de un usuario (o crea uno, admin o lector) en
+#      panel.yaml (solo se guarda el hash scrypt) y reinicia el panel
 # En la radio o en el PC del UPF:
 #   1) Ver la configuración
 #   2) Cambiar la IP del core al que llama (y reiniciar lo que depende de ella)
@@ -272,6 +274,101 @@ afegeix_equip() {   # afegeix_equip <radio|upf>
     return 0
 }
 
+usuaris_panell() {   # usuaris_panell <panel.yaml>: "nombre rol" de cada usuario
+    python3 -I - "$1" <<'PY'
+import re, sys
+dins, nom = False, None
+for l in open(sys.argv[1]).read().split('\n'):
+    if re.match(r'^usuaris:\s*$', l): dins = True; continue
+    if dins and re.match(r'^\S', l): break
+    m = re.match(r'^  ([A-Za-z0-9_.@-]+):\s*$', l) if dins else None
+    if m: nom = m.group(1); continue
+    m = re.match(r'^    rol:\s*["\x27]?(\w+)', l) if dins and nom else None
+    if m: print(nom, m.group(1)); nom = None
+PY
+}
+
+# Cambia la contraseña de un usuario del panel web (o lo crea) en panel.yaml y reinicia el
+# panel. Solo se guarda el hash scrypt (el mismo formato que panel/app/auth.py).
+canvia_contrasenya_panell() {
+    local pd cfg u rol p1 p2 h lst=()
+    pd="$(panell_dir)"; cfg="$pd/config/panel.yaml"
+    [[ -n "$pd" && -f "$cfg" ]] || { avis "no encuentro el panel web en este PC (contenedor panel5g y su config/panel.yaml)"; return 0; }
+    echo
+    echo "--- Contraseña del panel web ---"
+    mapfile -t lst < <(usuaris_panell "$cfg")
+    info "usuarios: $( ((${#lst[@]})) && printf '%s\n' "${lst[@]}" | sed 's/ \(.*\)/ (\1)/' | paste -sd, - | sed 's/,/, /g' || echo ninguno)"
+    info "(admin: cambia y aplica; lector: solo ve estado y logs)"
+    pregunta "Usuario" u "admin"
+    [[ $u =~ ^[A-Za-z0-9_.@-]{1,40}$ ]] || { echo "    Nombre no válido."; return 0; }
+    rol=""
+    if ! printf '%s\n' "${lst[@]}" | grep -q "^$u "; then
+        si_no "\"$u\" no existe. ¿Lo creo?" || return 0
+        pregunta "Rol (admin o lector)" rol "lector"
+        [[ $rol == admin || $rol == lector ]] || { echo "    Rol no válido."; return 0; }
+    fi
+    while true; do
+        read -r -s -p "    Contraseña nueva de $u (mínimo 8 caracteres): " p1 || { echo; return 0; }; echo
+        (( ${#p1} >= 8 )) || { echo "    Demasiado corta."; continue; }
+        read -r -s -p "    Repítela: " p2 || { echo; return 0; }; echo
+        [[ "$p1" == "$p2" ]] && break
+        echo "    No coinciden."
+    done
+    h="$(printf '%s' "$p1" | python3 -I -c '
+import base64, hashlib, os, sys
+pw = sys.stdin.read()
+n, r, p = 2 ** 15, 8, 1
+salt = os.urandom(16)
+dk = hashlib.scrypt(pw.encode(), salt=salt, n=n, r=r, p=p, maxmem=64 * 1024 * 1024)
+b = lambda x: base64.b64encode(x).decode()
+print(f"scrypt${n}${r}${p}${b(salt)}${b(dk)}")')" || { avis "no se ha podido calcular el hash"; return 0; }
+    p1=""; p2=""
+    cp -p "$cfg" "$cfg.bak-$TS"
+    if ! U="$u" ROL="$rol" H="$h" python3 -I - "$cfg" <<'PY'
+import os, re, sys
+f = sys.argv[1]; u, rol, h = os.environ['U'], os.environ['ROL'], os.environ['H']
+ls = open(f).read().split('\n')
+i = next((k for k, l in enumerate(ls) if re.match(r'^usuaris:\s*$', l)), None)
+if i is None:
+    sys.exit('panel.yaml no tiene la sección usuaris:')
+fi = next((k for k in range(i + 1, len(ls)) if re.match(r'^\S', ls[k])), len(ls))
+if rol:                                   # usuario nuevo: al final de la sección
+    while fi > i + 1 and not ls[fi - 1].strip():
+        fi -= 1
+    ls[fi:fi] = [f'  {u}:', f'    rol: {rol}', f'    hash: "{h}"']
+else:
+    k0 = next(k for k in range(i + 1, fi) if re.match(rf'^  {re.escape(u)}:\s*$', ls[k]))
+    k1 = next((k for k in range(k0 + 1, fi) if re.match(r'^  \S', ls[k])), fi)
+    hk = next((k for k in range(k0 + 1, k1) if re.match(r'^    hash:', ls[k])), None)
+    if hk is None:
+        ls.insert(k0 + 1, f'    hash: "{h}"')
+    else:
+        ls[hk] = f'    hash: "{h}"'
+t = f + '.nou'
+open(t, 'w').write('\n'.join(ls))
+st = os.stat(f); os.chown(t, st.st_uid, st.st_gid); os.chmod(t, st.st_mode & 0o7777)
+os.replace(t, f)
+PY
+    then
+        avis "no he podido cambiar panel.yaml (sin cambios; copia en $cfg.bak-$TS)"; return 0
+    fi
+    info "$cfg: ${rol:+usuario $u creado ($rol); }contraseña de $u cambiada (copia .bak-$TS)"
+    # core5g.sh guarda el hash del admin en /etc/core5g.conf: se mantiene al día
+    if [[ $u == admin && -f /etc/core5g.conf ]] && grep -q '^declare -g PANELL_HASH=' /etc/core5g.conf; then
+        H="$h" python3 -I -c '
+import os, re
+f = "/etc/core5g.conf"; s = open(f).read()
+s = re.sub(r"(?m)^declare -g PANELL_HASH=.*$", lambda m: "declare -g PANELL_HASH=" + chr(39) + os.environ["H"] + chr(39), s)
+open(f, "w").write(s)' && info "/etc/core5g.conf: hash del admin al día"
+    fi
+    if docker restart panel5g >/dev/null 2>&1; then
+        info "panel reiniciado: entra con la contraseña nueva (las sesiones abiertas se cierran)"
+    else
+        avis "no he podido reiniciar el panel: sudo docker restart panel5g"
+    fi
+    return 0
+}
+
 # --- radio / UPF ---------------------------------------------------------------------------
 veure_client() {   # veure_client <json> <nombre>
     echo
@@ -483,7 +580,8 @@ while true; do
                          "canvia_ip_core|Cambiar la IP del core (y regenerar los certificados)"
                          "renova|Renovar los certificados (misma IP)"
                          "afegeix_radio|Añadir una radio (muestra su código de emparejamiento)"
-                         "afegeix_upf|Añadir un UPF (muestra su código de emparejamiento)") ;;
+                         "afegeix_upf|Añadir un UPF (muestra su código de emparejamiento)"
+                         "contrasenya|Cambiar la contraseña del panel web (o añadir un usuario)") ;;
         radio) opcions+=("veure_radio|Ver la configuración de la radio"
                          "core_radio|Cambiar la IP del core al que llama la radio"
                          "cert_radio|Renovar el certificado de la radio (pegando el código del core)") ;;
@@ -514,6 +612,7 @@ while true; do
         cert_upf)       renova_cert_client $CFG_U agent5g-upf upf ;;
         afegeix_radio)  afegeix_equip radio ;;
         afegeix_upf)    afegeix_equip upf ;;
+        contrasenya)    canvia_contrasenya_panell ;;
         actualitza)     actualitza ;;
     esac
 done

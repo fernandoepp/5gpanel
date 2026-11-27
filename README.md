@@ -297,6 +297,7 @@ En el core, `sudo agent5g` abre un menú:
 
    Antes de tocar cada fichero guarda una copia.
 3. **Renovar los certificados** con la misma IP.
+6. **Cambiar la contraseña del panel web** (o añadir un usuario `admin` o `lector`): pide la contraseña dos veces, guarda solo el hash scrypt en `config/panel.yaml` (con copia), actualiza el hash del admin en `/etc/core5g.conf` y reinicia el panel.
 4. **Añadir una radio** / **5. Añadir un UPF**: pide el nombre (propone `radio1`, `upf1`…, el siguiente libre), emite el certificado con la misma CA y muestra el código de emparejamiento para pegar en el instalador de ese PC. Es lo mismo que `sudo emparella-radio <nombre>` / `sudo emparella-upf <nombre>`. Si el nombre ya existe, vuelve a mostrar su código o, si lo pides, emite uno nuevo.
 
 En cada radio o PC con UPF, `sudo agent5g` → *Cambiar la IP del core*. Actualiza `"core"` en
